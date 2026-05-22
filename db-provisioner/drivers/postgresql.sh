@@ -29,25 +29,46 @@ pg_client_image() {
 }
 
 pg_run_k8s_client() {
+  # 从 stdin 读脚本（与原有 heredoc 调用方式兼容）；非交互 Pod，避免 --rm -i 的 "pod deleted" 误判
   local pod_name="$1"
-  local namespace image timeout pull_policy
+  local namespace image timeout pull_policy term_exit logs
+  local pull_secret overrides script_content script_b64
   namespace="$(pg_client_namespace)"
   image="$(pg_client_image)"
   timeout="${PG_CLIENT_POD_RUNNING_TIMEOUT:-5m0s}"
   pull_policy="${PG_CLIENT_IMAGE_PULL_POLICY:-IfNotPresent}"
-  local pull_secret="${PG_CLIENT_IMAGE_PULL_SECRET:-harbor-registry-secret}"
-  local overrides
+  pull_secret="${PG_CLIENT_IMAGE_PULL_SECRET:-harbor-registry-secret}"
   overrides="$(printf '{"spec":{"imagePullSecrets":[{"name":"%s"}]}}' "${pull_secret}")"
 
   require_cmd "kubectl"
+  script_content="$(cat)"
+  script_b64="$(printf '%s' "${script_content}" | base64 -w0 2>/dev/null || printf '%s' "${script_content}" | base64)"
+
   log "[pg] using temporary PostgreSQL client pod: ${namespace}/${pod_name} (${image})"
-  kubectl run "${pod_name}" --rm -i --restart=Never -n "${namespace}" \
+  if ! kubectl run "${pod_name}" --restart=Never -n "${namespace}" \
     --image="${image}" \
     --image-pull-policy="${pull_policy}" \
     --overrides="${overrides}" \
-    --pod-running-timeout="${timeout}" \
     --env="PGPASSWORD=${PG_ADMIN_PASSWORD}" \
-    --command -- bash -se
+    --command -- bash -c "echo '${script_b64}' | base64 -d | bash -se" >/dev/null 2>&1; then
+    kubectl delete pod "${pod_name}" -n "${namespace}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    return 1
+  fi
+
+  if kubectl wait --for=jsonpath='{.status.phase}'=Succeeded -n "${namespace}" "pod/${pod_name}" --timeout="${timeout}" >/dev/null 2>&1; then
+    term_exit=0
+  elif kubectl wait --for=jsonpath='{.status.phase}'=Failed -n "${namespace}" "pod/${pod_name}" --timeout="${timeout}" >/dev/null 2>&1; then
+    term_exit="$(kubectl get pod "${pod_name}" -n "${namespace}" -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}' 2>/dev/null || echo 1)"
+  else
+    term_exit=1
+  fi
+
+  logs="$(kubectl logs "${pod_name}" -n "${namespace}" 2>/dev/null || true)"
+  kubectl delete pod "${pod_name}" -n "${namespace}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+  if [[ -n "${logs}" ]]; then
+    printf '%s\n' "${logs}"
+  fi
+  return "${term_exit:-1}"
 }
 
 pg_provision() {
