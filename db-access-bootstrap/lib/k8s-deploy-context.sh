@@ -21,9 +21,10 @@ k8s_bootstrap_resolve_context() {
   PG_SERVICE="${PG_SERVICE:-postgresql-sunmoonai}"
   REDIS_SERVICE="${REDIS_SERVICE:-redis-sunmoonai-master}"
   NODEBULL_REDIS_SERVICE="${NODEBULL_REDIS_SERVICE:-redis-nodebull-master}"
+  MONGO_SERVICE="${MONGO_SERVICE:-mongodb-sunmoonai}"
 
   export APP_NAMESPACE NAMESPACE DATA_NAMESPACE
-  export PG_SERVICE REDIS_SERVICE NODEBULL_REDIS_SERVICE
+  export PG_SERVICE REDIS_SERVICE NODEBULL_REDIS_SERVICE MONGO_SERVICE
 }
 
 _k8s_bootstrap_sed_escape() {
@@ -35,13 +36,14 @@ k8s_bootstrap_prepare_config() {
   local src="$1"
   [[ -f "$src" ]] || return 1
 
-  local dst pg_host redis_host nodebull_host app_ns
+  local dst pg_host redis_host nodebull_host mongo_host app_ns
   dst="$(mktemp "${TMPDIR:-/tmp}/db-bootstrap.XXXXXX")"
   cp "$src" "$dst"
 
   pg_host="$(_k8s_bootstrap_sed_escape "${PG_SERVICE}.${DATA_NAMESPACE}.svc.cluster.local")"
   redis_host="$(_k8s_bootstrap_sed_escape "${REDIS_SERVICE}.${DATA_NAMESPACE}.svc.cluster.local")"
   nodebull_host="$(_k8s_bootstrap_sed_escape "${NODEBULL_REDIS_SERVICE}.${DATA_NAMESPACE}.svc.cluster.local")"
+  mongo_host="$(_k8s_bootstrap_sed_escape "${MONGO_SERVICE}.${DATA_NAMESPACE}.svc.cluster.local")"
   app_ns="$(_k8s_bootstrap_sed_escape "${APP_NAMESPACE}")"
 
   sed -i -e "s|^OUTPUT_NAMESPACE=.*|OUTPUT_NAMESPACE=${app_ns}|" "$dst"
@@ -53,8 +55,11 @@ k8s_bootstrap_prepare_config() {
     nodebull-redis.k8s.env)
       sed -i -e "s|^DB_HOST=.*|DB_HOST=${nodebull_host}|" "$dst"
       ;;
-    postgresql.k8s.env|*.k8s.env)
+    postgresql.k8s.env)
       sed -i -e "s|^DB_HOST=.*|DB_HOST=${pg_host}|" "$dst"
+      ;;
+    mongodb.k8s.env)
+      sed -i -e "s|^DB_HOST=.*|DB_HOST=${mongo_host}|" "$dst"
       ;;
   esac
 
