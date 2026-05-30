@@ -120,3 +120,19 @@ wait_k8s_pods_ready() {
   kubectl -n "${ns}" get pods -l "${selector}" -o wide || true
   die "K8s pod readiness precheck failed"
 }
+
+# K8s Pod 名称单段最长 63 字符；格式: dbctl-<role>-<service>-<timestamp>
+dbctl_k8s_client_pod_name() {
+  local role="$1"
+  local service="${2:-app}"
+  local ts suffix prefix max_len
+
+  ts="$(date +%s)"
+  suffix="-${ts}"
+  prefix="dbctl-${role}-"
+  max_len=$((63 - ${#prefix} - ${#suffix}))
+  if ((${#service} > max_len)); then
+    service="${service:0:max_len}"
+  fi
+  printf '%s%s%s' "$prefix" "$service" "$suffix"
+}

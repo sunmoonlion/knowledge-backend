@@ -93,10 +93,12 @@ redis_provision() {
     fi
     wait_k8s_pods_ready
     if redis_use_k8s_client; then
-      local pod_name="dbctl-redis-auth-${SERVICE_NAME:-app}-$(date +%s)"
+      local pod_name
+      pod_name="$(dbctl_k8s_client_pod_name "redis-auth" "${SERVICE_NAME:-app}")"
       redis_run_k8s_client "${pod_name}" <<EOF
 REDISCLI_AUTH='${REDIS_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' -n '${REDIS_DB_INDEX}' PING >/dev/null
 EOF
+      [[ $? -eq 0 ]] || die "Redis k8s auth client pod failed"
     else
       require_cmd "redis-cli"
       redis_precheck
@@ -122,7 +124,8 @@ EOF
   wait_k8s_pods_ready
 
   if redis_use_k8s_client; then
-    local pod_name="dbctl-redis-provision-${SERVICE_NAME:-app}-$(date +%s)"
+    local pod_name
+    pod_name="$(dbctl_k8s_client_pod_name "redis-provision" "${SERVICE_NAME:-app}")"
     redis_run_k8s_client "${pod_name}" <<EOF
 key_spec='${key_spec}'
 key_sep='${key_sep}'
@@ -141,6 +144,7 @@ REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}
 REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' ACL SETUSER '${APP_DB_USER}' on '>${APP_DB_PASSWORD}' "\${key_args[@]}" \${category} -@dangerous >/dev/null
 echo '[redis-client] ACL user upserted: ${APP_DB_USER}'
 EOF
+    [[ $? -eq 0 ]] || die "Redis k8s provision client pod failed"
     APP_DB_URI="redis://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${REDIS_DB_INDEX}"
     require_non_empty "APP_DB_URI(redis)" "${APP_DB_URI}"
     return 0
@@ -192,7 +196,8 @@ redis_deprovision() {
   wait_k8s_pods_ready
 
   if redis_use_k8s_client; then
-    local pod_name="dbctl-redis-deprovision-${SERVICE_NAME:-app}-$(date +%s)"
+    local pod_name
+    pod_name="$(dbctl_k8s_client_pod_name "redis-deprovision" "${SERVICE_NAME:-app}")"
     redis_run_k8s_client "${pod_name}" <<EOF
 REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' PING >/dev/null
 REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' ACL DELUSER '${APP_DB_USER}' >/dev/null || true
