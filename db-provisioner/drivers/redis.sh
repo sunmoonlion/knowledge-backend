@@ -113,14 +113,26 @@ EOF
   local key_spec="${REDIS_KEY_PREFIX:-${SERVICE_NAME:-app}:*}"
   local key_sep="${REDIS_KEY_PREFIX_SEP:-}"
   # +@connection：PING/CLIENT 等，ioredis 连接就绪检查需要；勿省略
-  # +@pubsub：Bull/NodeBull worker 需要 subscribe/psubscribe；须配合 channel 前缀（见 REDIS_CHANNEL_PREFIX）
+  # +@pubsub：Bull/NodeBull worker 需要 subscribe/psubscribe
   local category="${REDIS_ACL_CATEGORY:-+@read +@write +@connection +@hash +@string +@list +@set +@sortedset}"
   local channel_spec="${REDIS_CHANNEL_PREFIX:-}"
-  if [[ -z "${channel_spec}" && "${category}" == *"+@pubsub"* ]]; then
-    channel_spec="${key_spec}"
+  local redis_all_channels="false"
+  if [[ "${category}" == *"+@pubsub"* ]]; then
+    if bool_true "${REDIS_ALL_CHANNELS:-true}"; then
+      redis_all_channels="true"
+    elif [[ -z "${channel_spec}" ]]; then
+      channel_spec="${key_spec}"
+    fi
   fi
 
-  log "Provision Redis ACL user: user=${APP_DB_USER}, db=${REDIS_DB_INDEX}, keyPrefixes=${key_spec} (sep=${key_sep:-whitespace}), channelPrefixes=${channel_spec:-none}"
+  local channel_log="none"
+  if [[ "${redis_all_channels}" == "true" ]]; then
+    channel_log="allchannels"
+  elif [[ -n "${channel_spec}" ]]; then
+    channel_log="${channel_spec}"
+  fi
+
+  log "Provision Redis ACL user: user=${APP_DB_USER}, db=${REDIS_DB_INDEX}, keyPrefixes=${key_spec} (sep=${key_sep:-whitespace}), channelAccess=${channel_log}"
   if bool_true "${DRY_RUN:-false}"; then
     log "DRY_RUN=true, skip executing redis-cli"
     return 0
@@ -136,6 +148,7 @@ key_spec='${key_spec}'
 key_sep='${key_sep}'
 channel_spec='${channel_spec}'
 category='${category}'
+redis_all_channels='${redis_all_channels}'
 key_args=()
 channel_args=()
 if [[ -n "\${key_sep}" ]]; then
@@ -147,7 +160,7 @@ for pat in "\${prefix_parts[@]}"; do
   [[ -z "\${pat}" ]] && continue
   key_args+=( "~\${pat}" )
 done
-if [[ -n "\${channel_spec}" ]]; then
+if [[ "\${redis_all_channels}" != "true" && -n "\${channel_spec}" ]]; then
   if [[ -n "\${key_sep}" ]]; then
     IFS="\${key_sep}" read -ra channel_parts <<< "\${channel_spec}"
   else
@@ -159,7 +172,11 @@ if [[ -n "\${channel_spec}" ]]; then
   done
 fi
 REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' PING >/dev/null
-REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' ACL SETUSER '${APP_DB_USER}' on '>${APP_DB_PASSWORD}' "\${key_args[@]}" "\${channel_args[@]}" \${category} -@dangerous >/dev/null
+if [[ "\${redis_all_channels}" == "true" ]]; then
+  REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' ACL SETUSER '${APP_DB_USER}' on '>${APP_DB_PASSWORD}' "\${key_args[@]}" allchannels \${category} -@dangerous >/dev/null
+else
+  REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' ACL SETUSER '${APP_DB_USER}' on '>${APP_DB_PASSWORD}' "\${key_args[@]}" "\${channel_args[@]}" \${category} -@dangerous >/dev/null
+fi
 echo '[redis-client] ACL user upserted: ${APP_DB_USER}'
 EOF
     [[ $? -eq 0 ]] || die "Redis k8s provision client pod failed"
@@ -191,7 +208,7 @@ EOF
     [[ -z "${pat}" ]] && continue
     key_args+=( "~${pat}" )
   done
-  if [[ -n "${channel_spec}" ]]; then
+  if [[ "${redis_all_channels}" != "true" && -n "${channel_spec}" ]]; then
     if [[ -n "${key_sep}" ]]; then
       IFS="${key_sep}"
     else
@@ -205,8 +222,13 @@ EOF
       channel_args+=( "&${pat}" )
     done
   fi
-  # shellcheck disable=SC2086
-  redis-cli -h "${DB_HOST}" -p "${DB_PORT}" ${auth_args} ACL SETUSER "${APP_DB_USER}" on ">${APP_DB_PASSWORD}" "${key_args[@]}" "${channel_args[@]}" ${category} -@dangerous >/dev/null
+  if [[ "${redis_all_channels}" == "true" ]]; then
+    # shellcheck disable=SC2086
+    redis-cli -h "${DB_HOST}" -p "${DB_PORT}" ${auth_args} ACL SETUSER "${APP_DB_USER}" on ">${APP_DB_PASSWORD}" "${key_args[@]}" allchannels ${category} -@dangerous >/dev/null
+  else
+    # shellcheck disable=SC2086
+    redis-cli -h "${DB_HOST}" -p "${DB_PORT}" ${auth_args} ACL SETUSER "${APP_DB_USER}" on ">${APP_DB_PASSWORD}" "${key_args[@]}" "${channel_args[@]}" ${category} -@dangerous >/dev/null
+  fi
   log "[redis] ACL user upserted: ${APP_DB_USER}"
 
   APP_DB_URI="redis://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${REDIS_DB_INDEX}"
