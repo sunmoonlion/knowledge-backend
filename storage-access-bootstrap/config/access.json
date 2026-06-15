@@ -1,0 +1,28 @@
+{
+  "apiVersion": "storage.sunmoonai.com/v1alpha1",
+  "kind": "ObjectStorageAccess",
+  "metadata": {
+    "name": "tpl-admin-backend"
+  },
+  "spec": {
+    "provider": "platform-s3",
+    "environment": "development",
+    "app": "tpl-app",
+    "backend": "tpl-admin-backend",
+    "namespace": "app-platform-dev",
+    "secretName": "tpl-admin-backend-s3",
+    "configMapName": "tpl-admin-backend-s3",
+    "region": "us-east-1",
+    "forcePathStyle": true,
+    "useTLS": false,
+    "deletionPolicy": "Retain",
+    "buckets": [
+      {
+        "name": "development-tpl-admin-assets",
+        "permissions": ["read", "write", "delete", "list"],
+        "versioning": true,
+        "objectLock": false
+      }
+    ]
+  }
+}
