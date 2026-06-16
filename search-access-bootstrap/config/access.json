@@ -2,16 +2,16 @@
   "apiVersion": "search.sunmoonai.com/v1alpha1",
   "kind": "ElasticsearchAccess",
   "metadata": {
-    "name": "tpl-admin-backend"
+    "name": "knowledge-admin-backend"
   },
   "spec": {
     "provider": "platform-elasticsearch",
     "environment": "development",
-    "app": "tpl-app",
-    "backend": "tpl-admin-backend",
+    "app": "knowledge-app",
+    "backend": "knowledge-admin-backend",
     "namespace": "app-platform-dev",
-    "secretName": "tpl-admin-backend-elasticsearch",
-    "configMapName": "tpl-admin-backend-elasticsearch",
+    "secretName": "knowledge-admin-backend-elasticsearch",
+    "configMapName": "knowledge-admin-backend-elasticsearch",
     "datasets": [
       {
         "name": "admin-documents",

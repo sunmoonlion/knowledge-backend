@@ -1,7 +1,7 @@
 # storage-access-bootstrap (admin-backend)
 
 This directory declares and provisions standard S3 access for
-`tpl-admin-backend`.
+`knowledge-admin-backend`.
 
 It is disabled by default. Enable it only when this Backend owns a distinct
 set of object data inside the App domain.
@@ -17,15 +17,15 @@ The declaration contains no credentials. The Data Platform provisioner creates
 an IAM identity and writes these resources to the target Namespace:
 
 ```text
-Secret:    tpl-admin-backend-s3
-ConfigMap: tpl-admin-backend-s3
+Secret:    knowledge-admin-backend-s3
+ConfigMap: knowledge-admin-backend-s3
 ```
 
 The Backend Deployment should reference both resources with `envFrom`.
 When generating its Kubernetes deployment with `k8s-scaffold`, use:
 
 ```bash
-./k8s-scaffold/scaffold.sh tpl-admin-backend 8001 \
+./k8s-scaffold/scaffold.sh knowledge-admin-backend 8001 \
   --type backend \
   --with-object-storage
 ```
@@ -34,8 +34,8 @@ For an existing generated deployment, set these fields in its
 `generate-app.conf`:
 
 ```text
-TPL_ADMIN_BACKEND_OBJECT_STORAGE_CONFIGMAP_NAME=tpl-admin-backend-s3
-TPL_ADMIN_BACKEND_OBJECT_STORAGE_SECRET_NAME=tpl-admin-backend-s3
+KNOWLEDGE_ADMIN_BACKEND_OBJECT_STORAGE_CONFIGMAP_NAME=knowledge-admin-backend-s3
+KNOWLEDGE_ADMIN_BACKEND_OBJECT_STORAGE_SECRET_NAME=knowledge-admin-backend-s3
 ```
 
 ## Commands

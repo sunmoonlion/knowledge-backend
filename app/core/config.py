@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # 数据库（读 DATABASE_URL，自动补 +asyncpg 驱动前缀）
-    database_url: str = "postgresql+asyncpg://tpl:tpl@localhost:5432/tpl"
+    database_url: str = "postgresql+asyncpg://knowledge:knowledge@localhost:5432/knowledge"
 
     @field_validator("database_url", mode="before")
     @classmethod
@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     casdoor_client_secret: str = ""
     casdoor_redirect_uri: str = ""
     casdoor_organization: str = "built-in"
-    casdoor_application: str = "app-tpl"
+    casdoor_application: str = "app-knowledge"
     casdoor_verify_ssl: bool = True
 
     # Frontend
@@ -41,6 +41,22 @@ class Settings(BaseSettings):
 
     # Session
     session_ttl_seconds: int = 3600
+
+    # Celery（应用层只读 CELERY_BROKER_URL；k8s 按 Deployment 注入 producer/worker 账号）
+    celery_broker_url: str | None = Field(
+        default=None, validation_alias="CELERY_BROKER_URL"
+    )
+    celery_queue: str = Field(
+        default="default",
+        validation_alias=AliasChoices("CELERY_QUEUE", "CELERY_TASK_DEFAULT_QUEUE"),
+    )
+    celery_result_backend: str | None = Field(
+        default=None, validation_alias="CELERY_RESULT_BACKEND"
+    )
+
+    @property
+    def celery_enabled(self) -> bool:
+        return bool(self.celery_broker_url)
 
     model_config = SettingsConfigDict(
         env_file=".env",
