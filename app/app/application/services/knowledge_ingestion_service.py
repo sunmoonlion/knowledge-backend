@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,8 +21,10 @@ def build_idempotency_key(payload: KnowledgeIngestionCreate) -> str:
     return f"{payload.source_app}:{payload.source_document_version_id}:{dataset}"
 
 
-def _status_entry(status: str, *, last_error: str | None = None, metadata: dict | None = None) -> dict:
-    entry = {
+def _status_entry(
+    status: str, *, last_error: str | None = None, metadata: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
         "status": status,
         "at": datetime.now(UTC).isoformat(),
     }
@@ -32,7 +35,7 @@ def _status_entry(status: str, *, last_error: str | None = None, metadata: dict 
     return entry
 
 
-def _payload_dict(payload: KnowledgeIngestionCreate, idempotency_key: str) -> dict:
+def _payload_dict(payload: KnowledgeIngestionCreate, idempotency_key: str) -> dict[str, Any]:
     return {
         "source_app": payload.source_app,
         "source_document_id": str(payload.source_document_id),

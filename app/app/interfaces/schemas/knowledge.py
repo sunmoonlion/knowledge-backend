@@ -31,6 +31,7 @@ class KnowledgeIngestionCreate(BaseModel):
     profile_key: str = Field(default="markdown", min_length=1, max_length=80)
     idempotency_key: str | None = Field(default=None, max_length=255)
 
+
 class KnowledgeIngestionStatusUpdate(BaseModel):
     status: str = Field(min_length=1, max_length=30)
     last_error: str | None = None
