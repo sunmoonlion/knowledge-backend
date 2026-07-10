@@ -7,12 +7,16 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.config import get_settings
+
+from app.infrastructure.external.ragflow import RAGFlowError, ingest_into_ragflow
 from app.infrastructure.models.knowledge import KnowledgeIngestionJob
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
 
 
 TERMINAL_STATUSES = {"succeeded", "failed"}
 PROCESSOR_NAME = "mock-ingestion-worker"
+RAGFLOW_PROCESSOR_NAME = "ragflow-ingestion-worker"
 
 
 def build_idempotency_key(payload: KnowledgeIngestionCreate) -> str:
@@ -168,6 +172,18 @@ def build_processing_success_metadata(job: KnowledgeIngestionJob) -> dict[str, A
     }
 
 
+def build_ragflow_success_metadata(
+    job: KnowledgeIngestionJob, ragflow_metadata: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "processor": RAGFLOW_PROCESSOR_NAME,
+        "mode": "ragflow",
+        "artifact_ref_count": len(job.source_artifact_refs or []),
+        "ragflow": "processed",
+        **ragflow_metadata,
+    }
+
+
 async def process_ingestion_job(
     session: AsyncSession, *, ingestion_id: uuid.UUID
 ) -> KnowledgeIngestionJob:
@@ -177,15 +193,48 @@ async def process_ingestion_job(
     if job.status in TERMINAL_STATUSES:
         return job
 
+    settings = get_settings()
+    processor_name = RAGFLOW_PROCESSOR_NAME if settings.ragflow_enabled else PROCESSOR_NAME
     job = await update_ingestion_status(
         session,
         ingestion_id=ingestion_id,
         status="running",
         last_error=None,
-        metadata={"processor": PROCESSOR_NAME},
+        metadata={"processor": processor_name},
         knowledge_document_id=None,
         ragflow_document_id=None,
     )
+
+    if settings.ragflow_enabled:
+        try:
+            result = await ingest_into_ragflow(
+                settings=settings,
+                target_dataset=job.target_dataset or "default",
+                title=job.title,
+                canonical_url=job.canonical_url,
+                source_artifact_refs=list(job.source_artifact_refs or []),
+                metadata_json=dict(job.metadata_json or {}),
+                source_document_version_id=str(job.source_document_version_id),
+            )
+        except (RAGFlowError, OSError, ValueError) as exc:
+            return await update_ingestion_status(
+                session,
+                ingestion_id=ingestion_id,
+                status="failed",
+                last_error=str(exc),
+                metadata={"processor": RAGFLOW_PROCESSOR_NAME, "mode": "ragflow"},
+                knowledge_document_id=None,
+                ragflow_document_id=None,
+            )
+        return await update_ingestion_status(
+            session,
+            ingestion_id=ingestion_id,
+            status="succeeded",
+            last_error=None,
+            metadata=build_ragflow_success_metadata(job, result.metadata),
+            knowledge_document_id=f"ragflow-dataset:{result.dataset_id}",
+            ragflow_document_id=result.document_id,
+        )
 
     return await update_ingestion_status(
         session,

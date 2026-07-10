@@ -57,9 +57,30 @@ class Settings(BaseSettings):
         default=None, validation_alias="CELERY_RESULT_BACKEND"
     )
 
+    # RAGFlow ingestion（未配置 API key/base 时 worker 保持 mock 模式）
+    ragflow_api_base: str | None = Field(default=None, validation_alias="RAGFLOW_API_BASE")
+    ragflow_api_key: str | None = Field(default=None, validation_alias="RAGFLOW_API_KEY")
+    ragflow_parse_timeout_seconds: int = Field(
+        default=120, validation_alias="RAGFLOW_PARSE_TIMEOUT_SECONDS"
+    )
+    ragflow_parse_poll_interval_seconds: float = Field(
+        default=1.0, validation_alias="RAGFLOW_PARSE_POLL_INTERVAL_SECONDS"
+    )
+
+    # S3 object storage（用于 ingestion worker 拉取上游 artifact）
+    s3_endpoint: str | None = Field(default=None, validation_alias="S3_ENDPOINT")
+    s3_region: str = Field(default="us-east-1", validation_alias="S3_REGION")
+    s3_access_key_id: str | None = Field(default=None, validation_alias="S3_ACCESS_KEY_ID")
+    s3_secret_access_key: str | None = Field(default=None, validation_alias="S3_SECRET_ACCESS_KEY")
+    s3_force_path_style: bool = Field(default=True, validation_alias="S3_FORCE_PATH_STYLE")
+
     @property
     def celery_enabled(self) -> bool:
         return bool(self.celery_broker_url)
+
+    @property
+    def ragflow_enabled(self) -> bool:
+        return bool(self.ragflow_api_base and self.ragflow_api_key)
 
     model_config = SettingsConfigDict(
         env_file=".env",
