@@ -70,7 +70,7 @@ class RAGFlowClient:
         return data
 
     async def ensure_dataset(self, name: str) -> dict[str, Any]:
-        list_data = await self._request("GET", "/datasets", params={"name": name, "page_size": 30})
+        list_data = await self._request("GET", "/datasets", params={"page_size": 100})
         for item in list_data.get("data") or []:
             if item.get("name") == name:
                 return item

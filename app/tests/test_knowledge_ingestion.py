@@ -155,10 +155,10 @@ def test_ragflow_enabled_requires_base_and_key() -> None:
 
 
 async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        calls.append((request.method, request.url.path))
+        calls.append((request.method, request.url.path, request.url.query.decode()))
         if request.method == "GET" and request.url.path == "/api/v1/datasets":
             return httpx.Response(200, json={"code": 0, "data": []})
         if request.method == "POST" and request.url.path == "/api/v1/datasets":
@@ -217,11 +217,11 @@ async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
     assert result.parse_status == "DONE"
     assert result.chunk_count == 2
     assert calls == [
-        ("GET", "/api/v1/datasets"),
-        ("POST", "/api/v1/datasets"),
-        ("POST", "/api/v1/datasets/dataset-1/documents"),
-        ("POST", "/api/v1/datasets/dataset-1/documents/parse"),
-        ("GET", "/api/v1/datasets/dataset-1/documents/document-1"),
+        ("GET", "/api/v1/datasets", "page_size=100"),
+        ("POST", "/api/v1/datasets", ""),
+        ("POST", "/api/v1/datasets/dataset-1/documents", ""),
+        ("POST", "/api/v1/datasets/dataset-1/documents/parse", ""),
+        ("GET", "/api/v1/datasets/dataset-1/documents/document-1", ""),
     ]
 
 
