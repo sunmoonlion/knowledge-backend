@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 from celery import Celery
+from kombu import Exchange, Queue
 
 celery_app = Celery("admin-backend")
 _configured = False
@@ -42,7 +43,13 @@ def configure_celery(*, require_broker: bool = False) -> bool:
     celery_app.conf.update(
         broker_url=broker,
         result_backend=result_backend or None,
+        task_queues=(
+            Queue(queue, Exchange(queue, type="direct"), routing_key=queue),
+        ),
         task_default_queue=queue,
+        task_default_exchange=queue,
+        task_default_exchange_type="direct",
+        task_default_routing_key=queue,
         task_serializer="json",
         accept_content=["json"],
         result_serializer="json",
