@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 
 import httpx
+import pytest
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -12,10 +13,15 @@ from app.application.services.knowledge_ingestion_service import (
     build_idempotency_key,
     build_processing_success_metadata,
     build_ragflow_success_metadata,
+    classify_ingestion_error,
+    get_ragflow_config_check,
 )
 from app.infrastructure.external.ragflow import (
     ArtifactContent,
     RAGFlowClient,
+    RAGFlowConfigCheck,
+    RAGFlowError,
+    check_ragflow_config,
     _s3_sigv4_headers,
     ingest_into_ragflow,
     resolve_artifact_content,
@@ -229,6 +235,22 @@ async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
     ]
 
 
+async def test_ragflow_client_wraps_http_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"code": 503, "message": "unavailable"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    ragflow = RAGFlowClient(
+        Settings(RAGFLOW_API_BASE="http://ragflow:9380", RAGFLOW_API_KEY="token"),
+        client=client,
+    )
+
+    with pytest.raises(RAGFlowError, match="RAGFlow HTTP request failed"):
+        await ragflow.list_datasets()
+
+    await client.aclose()
+
+
 def test_celery_delivery_options_use_platform_queue(monkeypatch) -> None:
     monkeypatch.setenv("CELERY_QUEUE", "knowledge.admin.default")
     from core.config import get_settings
@@ -242,3 +264,94 @@ def test_celery_delivery_options_use_platform_queue(monkeypatch) -> None:
         "routing_key": "knowledge.admin.default",
     }
     get_settings.cache_clear()
+
+
+def test_classify_ingestion_error_marks_ragflow_config_error() -> None:
+    status, metadata = classify_ingestion_error(
+        RAGFlowError("No default embedding model is set.")
+    )
+
+    assert status == "ragflow_config_error"
+    assert metadata == {"error_type": "ragflow_config_error"}
+
+
+def test_classify_ingestion_error_marks_artifact_unreadable() -> None:
+    status, metadata = classify_ingestion_error(
+        RAGFlowError("No readable artifact content found for ingestion job")
+    )
+
+    assert status == "artifact_unreadable"
+    assert metadata == {"error_type": "artifact_unreadable"}
+
+
+def test_classify_ingestion_error_marks_external_ragflow_error() -> None:
+    status, metadata = classify_ingestion_error(RAGFlowError("upstream unavailable"))
+
+    assert status == "external_api_error"
+    assert metadata == {"error_type": "external_api_error", "system": "ragflow"}
+
+
+async def test_ragflow_config_check_reports_missing_default_embedding() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/v1/datasets":
+            return httpx.Response(200, json={"code": 0, "data": []})
+        if request.method == "GET" and request.url.path == "/api/v1/users/me/models":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "tenant_id": "tenant-1",
+                        "name": "tenant",
+                        "llm_id": "chat-model",
+                    },
+                },
+            )
+        return httpx.Response(404, json={"code": 404, "message": "unexpected"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    class TestRAGFlowClient(RAGFlowClient):
+        def __init__(self, settings: Settings) -> None:
+            super().__init__(settings, client=client)
+
+    import app.infrastructure.external.ragflow as ragflow_module
+
+    original_client = ragflow_module.RAGFlowClient
+    ragflow_module.RAGFlowClient = TestRAGFlowClient
+    try:
+        result = await check_ragflow_config(
+            Settings(RAGFLOW_API_BASE="http://ragflow:9380", RAGFLOW_API_KEY="token")
+        )
+    finally:
+        ragflow_module.RAGFlowClient = original_client
+        await client.aclose()
+
+    assert result.enabled
+    assert result.reachable
+    assert not result.has_default_embedding
+    assert result.issues == ["RAGFlow tenant has no default embedding model"]
+    assert result.details["dataset_list_accessible"] is True
+    assert result.details["tenant_id"] == "tenant-1"
+
+
+async def test_service_ragflow_config_check_masks_secret(monkeypatch) -> None:
+    async def fake_check(settings: Settings) -> RAGFlowConfigCheck:
+        return RAGFlowConfigCheck(
+            enabled=True,
+            reachable=True,
+            has_default_embedding=True,
+            issues=[],
+            details={"api_key_configured": True, "tenant_id": "tenant-1"},
+        )
+
+    monkeypatch.setattr(
+        "app.application.services.knowledge_ingestion_service.check_ragflow_config",
+        fake_check,
+    )
+
+    result = await get_ragflow_config_check()
+
+    assert result["ready"] is True
+    assert result["details"] == {"api_key_configured": True, "tenant_id": "tenant-1"}
+    assert "api_key" not in result["details"]

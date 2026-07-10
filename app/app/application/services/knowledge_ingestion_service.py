@@ -9,12 +9,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
 
-from app.infrastructure.external.ragflow import RAGFlowError, ingest_into_ragflow
+from app.infrastructure.external.ragflow import (
+    RAGFlowError,
+    check_ragflow_config,
+    ingest_into_ragflow,
+)
 from app.infrastructure.models.knowledge import KnowledgeIngestionJob
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
 
 
-TERMINAL_STATUSES = {"succeeded", "failed"}
+TERMINAL_STATUSES = {
+    "succeeded",
+    "failed",
+    "ragflow_config_error",
+    "ragflow_parse_failed",
+    "artifact_unreadable",
+    "external_api_error",
+}
+RETRY_BLOCKED_STATUSES = {"ragflow_config_error"}
 PROCESSOR_NAME = "mock-ingestion-worker"
 RAGFLOW_PROCESSOR_NAME = "ragflow-ingestion-worker"
 
@@ -113,20 +125,38 @@ async def list_ingestion_jobs(
     session: AsyncSession,
     *,
     source_app: str | None,
+    source_document_id: uuid.UUID | None,
     source_document_version_id: uuid.UUID | None,
+    target_dataset: str | None,
     status: str | None,
+    ragflow_document_id: str | None,
+    idempotency_key: str | None,
+    created_from: datetime | None,
+    created_to: datetime | None,
     limit: int,
     offset: int,
 ) -> list[KnowledgeIngestionJob]:
     query = select(KnowledgeIngestionJob)
     if source_app:
         query = query.where(KnowledgeIngestionJob.source_app == source_app)
+    if source_document_id:
+        query = query.where(KnowledgeIngestionJob.source_document_id == source_document_id)
     if source_document_version_id:
         query = query.where(
             KnowledgeIngestionJob.source_document_version_id == source_document_version_id
         )
+    if target_dataset:
+        query = query.where(KnowledgeIngestionJob.target_dataset == target_dataset)
     if status:
         query = query.where(KnowledgeIngestionJob.status == status)
+    if ragflow_document_id:
+        query = query.where(KnowledgeIngestionJob.ragflow_document_id == ragflow_document_id)
+    if idempotency_key:
+        query = query.where(KnowledgeIngestionJob.idempotency_key == idempotency_key)
+    if created_from:
+        query = query.where(KnowledgeIngestionJob.created_at >= created_from)
+    if created_to:
+        query = query.where(KnowledgeIngestionJob.created_at <= created_to)
     query = query.order_by(KnowledgeIngestionJob.created_at.desc()).limit(limit).offset(offset)
     result = await session.execute(query)
     return list(result.scalars().all())
@@ -161,6 +191,86 @@ async def update_ingestion_status(
     await session.commit()
     await session.refresh(job)
     return job
+
+
+def classify_ingestion_error(exc: BaseException) -> tuple[str, dict[str, Any]]:
+    message = str(exc)
+    message_lower = message.lower()
+    if "no readable artifact content" in message_lower or "s3 artifact provided" in message_lower:
+        return "artifact_unreadable", {"error_type": "artifact_unreadable"}
+    if "no default embedding model" in message_lower:
+        return "ragflow_config_error", {"error_type": "ragflow_config_error"}
+    if "parse timed out" in message_lower or "parse failed" in message_lower:
+        return "ragflow_parse_failed", {"error_type": "ragflow_parse_failed"}
+    if isinstance(exc, RAGFlowError):
+        return "external_api_error", {"error_type": "external_api_error", "system": "ragflow"}
+    if isinstance(exc, OSError):
+        return "external_api_error", {"error_type": "external_api_error"}
+    return "failed", {"error_type": "unknown"}
+
+
+async def retry_ingestion_job(
+    session: AsyncSession, *, ingestion_id: uuid.UUID, force: bool = False, reason: str | None = None
+) -> KnowledgeIngestionJob:
+    job = await get_ingestion_job(session, ingestion_id)
+    if job is None:
+        raise ValueError(f"ingestion job not found: {ingestion_id}")
+    if job.status not in TERMINAL_STATUSES:
+        raise ValueError(f"ingestion job is not terminal: {job.status}")
+    if job.status == "succeeded":
+        raise ValueError("succeeded ingestion job cannot be retried")
+    if job.status in RETRY_BLOCKED_STATUSES and not force:
+        raise ValueError(f"retry blocked for {job.status}; fix configuration first or force retry")
+
+    metadata_json = dict(job.metadata_json or {})
+    retry_history = list(metadata_json.get("retry_history") or [])
+    retry_count = int(metadata_json.get("retry_count") or 0) + 1
+    retry_entry = {
+        "attempt": retry_count,
+        "at": datetime.now(UTC).isoformat(),
+        "from_status": job.status,
+        "force": force,
+    }
+    if reason:
+        retry_entry["reason"] = reason
+    retry_history.append(retry_entry)
+    metadata_json["retry_count"] = retry_count
+    metadata_json["retry_history"] = retry_history
+    metadata_json["last_retry_at"] = retry_entry["at"]
+
+    history = list(job.status_history or [])
+    history.append(
+        _status_entry(
+            "accepted",
+            metadata={
+                "retry": True,
+                "attempt": retry_count,
+                "from_status": job.status,
+                "force": force,
+                **({"reason": reason} if reason else {}),
+            },
+        )
+    )
+    job.status = "accepted"
+    job.last_error = None
+    job.completed_at = None
+    job.status_history = history
+    job.metadata_json = metadata_json
+    await session.commit()
+    await session.refresh(job)
+    return job
+
+
+async def get_ragflow_config_check() -> dict[str, Any]:
+    result = await check_ragflow_config(get_settings())
+    return {
+        "enabled": result.enabled,
+        "reachable": result.reachable,
+        "has_default_embedding": result.has_default_embedding,
+        "ready": result.enabled and result.reachable and result.has_default_embedding,
+        "issues": result.issues,
+        "details": result.details,
+    }
 
 
 def build_processing_success_metadata(job: KnowledgeIngestionJob) -> dict[str, Any]:
@@ -217,12 +327,17 @@ async def process_ingestion_job(
                 source_document_version_id=str(job.source_document_version_id),
             )
         except (RAGFlowError, OSError, ValueError) as exc:
+            failure_status, failure_metadata = classify_ingestion_error(exc)
             return await update_ingestion_status(
                 session,
                 ingestion_id=ingestion_id,
-                status="failed",
+                status=failure_status,
                 last_error=str(exc),
-                metadata={"processor": RAGFLOW_PROCESSOR_NAME, "mode": "ragflow"},
+                metadata={
+                    "processor": RAGFLOW_PROCESSOR_NAME,
+                    "mode": "ragflow",
+                    **failure_metadata,
+                },
                 knowledge_document_id=None,
                 ragflow_document_id=None,
             )

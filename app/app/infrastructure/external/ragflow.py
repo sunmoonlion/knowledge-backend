@@ -40,6 +40,15 @@ class RAGFlowIngestionResult:
     metadata: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class RAGFlowConfigCheck:
+    enabled: bool
+    reachable: bool
+    has_default_embedding: bool
+    issues: list[str]
+    details: dict[str, Any]
+
+
 class RAGFlowClient:
     def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
         if not settings.ragflow_api_base or not settings.ragflow_api_key:
@@ -60,10 +69,13 @@ class RAGFlowClient:
         return {"Authorization": f"Bearer {self._api_key}"}
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        response = await self._client.request(
-            method, f"{self._base}{path}", headers=self._headers(), **kwargs
-        )
-        response.raise_for_status()
+        try:
+            response = await self._client.request(
+                method, f"{self._base}{path}", headers=self._headers(), **kwargs
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RAGFlowError(f"RAGFlow HTTP request failed: {exc}") from exc
         data = response.json()
         if data.get("code") != 0:
             raise RAGFlowError(str(data.get("message") or data))
@@ -80,6 +92,18 @@ class RAGFlowClient:
             json={"name": name, "chunk_method": "naive", "permission": "me"},
         )
         return create_data["data"]
+
+    async def list_datasets(self, page_size: int = 10) -> list[dict[str, Any]]:
+        data = await self._request("GET", "/datasets", params={"page_size": page_size})
+        datasets = data.get("data") or []
+        return [item for item in datasets if isinstance(item, dict)]
+
+    async def get_tenant_models(self) -> dict[str, Any]:
+        data = await self._request("GET", "/users/me/models")
+        tenant = data.get("data") or {}
+        if not isinstance(tenant, dict):
+            raise RAGFlowError("RAGFlow tenant model response is not an object")
+        return tenant
 
     async def upload_document(self, dataset_id: str, artifact: ArtifactContent) -> dict[str, Any]:
         files = {
@@ -163,6 +187,64 @@ async def ingest_into_ragflow(
         )
     finally:
         await client.close()
+
+
+async def check_ragflow_config(settings: Settings) -> RAGFlowConfigCheck:
+    issues: list[str] = []
+    details: dict[str, Any] = {
+        "api_base_configured": bool(settings.ragflow_api_base),
+        "api_key_configured": bool(settings.ragflow_api_key),
+    }
+    if not settings.ragflow_enabled:
+        issues.append("RAGFlow API base or API key is not configured")
+        return RAGFlowConfigCheck(
+            enabled=False,
+            reachable=False,
+            has_default_embedding=False,
+            issues=issues,
+            details=details,
+        )
+
+    client = RAGFlowClient(settings)
+    try:
+        datasets = await client.list_datasets(page_size=1)
+        tenant = await client.get_tenant_models()
+    except Exception as exc:
+        issues.append(str(exc))
+        return RAGFlowConfigCheck(
+            enabled=True,
+            reachable=False,
+            has_default_embedding=False,
+            issues=issues,
+            details=details,
+        )
+    finally:
+        await client.close()
+
+    embd_id = str(tenant.get("embd_id") or "")
+    tenant_embd_id = tenant.get("tenant_embd_id")
+    has_default_embedding = bool(embd_id or tenant_embd_id)
+    if not has_default_embedding:
+        issues.append("RAGFlow tenant has no default embedding model")
+
+    details.update(
+        {
+            "dataset_list_accessible": True,
+            "visible_dataset_count_sample": len(datasets),
+            "tenant_id": tenant.get("tenant_id"),
+            "tenant_name": tenant.get("name"),
+            "embd_id": embd_id,
+            "tenant_embd_id": tenant_embd_id,
+            "llm_id": tenant.get("llm_id"),
+        }
+    )
+    return RAGFlowConfigCheck(
+        enabled=True,
+        reachable=True,
+        has_default_embedding=has_default_embedding,
+        issues=issues,
+        details=details,
+    )
 
 
 async def _wait_for_document_parse(

@@ -40,6 +40,20 @@ class KnowledgeIngestionStatusUpdate(BaseModel):
     ragflow_document_id: str | None = Field(default=None, max_length=255)
 
 
+class KnowledgeIngestionRetryRequest(BaseModel):
+    force: bool = False
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class RAGFlowConfigCheckRead(BaseModel):
+    enabled: bool
+    reachable: bool
+    has_default_embedding: bool
+    ready: bool
+    issues: list[str]
+    details: dict = Field(default_factory=dict)
+
+
 class KnowledgeIngestionRead(BaseModel):
     id: uuid.UUID
     source_app: str
