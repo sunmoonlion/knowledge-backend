@@ -1,4 +1,5 @@
 from functools import lru_cache
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,7 +17,9 @@ class Settings(BaseSettings):
     @classmethod
     def ensure_asyncpg(cls, v: str) -> str:
         if isinstance(v, str) and v.startswith("postgresql://"):
-            return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+            v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        if isinstance(v, str) and v.startswith("postgresql+asyncpg://"):
+            return strip_asyncpg_unsupported_query(v)
         return v
 
     # Redis（dbctl ACL 场景可设 REDIS_USER；仅 default 密码时可留空）
@@ -68,3 +71,14 @@ class Settings(BaseSettings):
 @lru_cache()
 def get_settings() -> Settings:
     return Settings()
+
+
+def strip_asyncpg_unsupported_query(database_url: str) -> str:
+    parts = urlsplit(database_url)
+    if not parts.query or "sslmode" not in parts.query:
+        return database_url
+    query = urlencode(
+        [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True) if key != "sslmode"],
+        doseq=True,
+    )
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))

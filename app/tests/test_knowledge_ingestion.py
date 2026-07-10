@@ -4,6 +4,7 @@ import uuid
 
 from app.application.services.knowledge_ingestion_service import build_idempotency_key
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
+from core.config import Settings
 
 
 def test_build_idempotency_key_defaults_dataset() -> None:
@@ -46,3 +47,17 @@ def test_ingestion_payload_uses_standard_contract_fields() -> None:
     assert payload.source_document_id == document_id
     assert payload.source_document_version_id == version_id
     assert payload.canonical_url == "https://example.com/news"
+
+
+def test_database_url_uses_asyncpg_without_sslmode() -> None:
+    settings = Settings(
+        database_url=(
+            "postgresql://knowledge:secret@postgresql:5432/knowledge"
+            "?sslmode=require&connect_timeout=10"
+        )
+    )
+
+    assert settings.database_url == (
+        "postgresql+asyncpg://knowledge:secret@postgresql:5432/knowledge"
+        "?connect_timeout=10"
+    )
