@@ -10,6 +10,7 @@ from app.application.services.knowledge_ingestion_service import (
     build_idempotency_key,
     build_processing_success_metadata,
 )
+from app.infrastructure.messaging.celery_producer import CeleryProducer
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
 from core.config import Settings
 
@@ -84,3 +85,18 @@ def test_build_processing_success_metadata_marks_mock_worker() -> None:
     assert metadata["mode"] == "mock"
     assert metadata["artifact_ref_count"] == 2
     assert metadata["ragflow"] == "deferred"
+
+
+def test_celery_delivery_options_use_platform_queue(monkeypatch) -> None:
+    monkeypatch.setenv("CELERY_QUEUE", "knowledge.admin.default")
+    from core.config import get_settings
+
+    get_settings.cache_clear()
+    options = CeleryProducer()._delivery_options()
+
+    assert options == {
+        "queue": "knowledge.admin.default",
+        "exchange": "knowledge.admin.default",
+        "routing_key": "knowledge.admin.default",
+    }
+    get_settings.cache_clear()

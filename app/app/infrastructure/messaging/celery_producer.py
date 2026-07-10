@@ -31,14 +31,22 @@ class CeleryProducer:
             return True
         return configure_celery()
 
+    def _delivery_options(self) -> dict[str, str]:
+        queue = get_settings().celery_queue
+        return {
+            "queue": queue,
+            "exchange": queue,
+            "routing_key": queue,
+        }
+
     def dispatch_ping(self) -> str:
         """投递 ping 任务，返回 Celery task_id。"""
         self._ensure_ready()
         from app.tasks.ping import ping
 
-        queue = get_settings().celery_queue
-        async_result = ping.apply_async(queue=queue)
-        logger.info("已投递 ping 任务 task_id=%s queue=%s", async_result.id, queue)
+        options = self._delivery_options()
+        async_result = ping.apply_async(**options)
+        logger.info("已投递 ping 任务 task_id=%s queue=%s", async_result.id, options["queue"])
         return async_result.id
 
     def dispatch_knowledge_ingestion(self, ingestion_id: uuid.UUID) -> str:
@@ -46,15 +54,14 @@ class CeleryProducer:
         self._ensure_ready()
         from app.tasks.knowledge_ingestion import process_knowledge_ingestion
 
-        queue = get_settings().celery_queue
         async_result = process_knowledge_ingestion.apply_async(
-            args=[str(ingestion_id)], queue=queue
+            args=[str(ingestion_id)], **self._delivery_options()
         )
         logger.info(
             "已投递 process_knowledge_ingestion 任务 task_id=%s ingestion_id=%s queue=%s",
             async_result.id,
             ingestion_id,
-            queue,
+            get_settings().celery_queue,
         )
         return async_result.id
 
