@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ArtifactRef(BaseModel):
@@ -19,26 +19,17 @@ class ArtifactRef(BaseModel):
 
 class KnowledgeIngestionCreate(BaseModel):
     source_app: str = Field(default="info-app", min_length=1, max_length=80)
-    source_document_id: uuid.UUID = Field(
-        validation_alias=AliasChoices("source_document_id", "document_id")
-    )
-    source_document_version_id: uuid.UUID = Field(
-        validation_alias=AliasChoices("source_document_version_id", "version_id")
-    )
+    source_document_id: uuid.UUID
+    source_document_version_id: uuid.UUID
     source_artifact_refs: list[ArtifactRef] = Field(default_factory=list)
     title: str | None = None
-    canonical_url: str | None = Field(
-        default=None, validation_alias=AliasChoices("canonical_url", "source_url")
-    )
+    canonical_url: str | None = None
     source_name: str | None = None
     content_hash: str | None = Field(default=None, max_length=128)
     metadata: dict = Field(default_factory=dict)
     target_dataset: str | None = Field(default=None, max_length=255)
     profile_key: str = Field(default="markdown", min_length=1, max_length=80)
     idempotency_key: str | None = Field(default=None, max_length=255)
-
-    model_config = ConfigDict(populate_by_name=True)
-
 
 class KnowledgeIngestionStatusUpdate(BaseModel):
     status: str = Field(min_length=1, max_length=30)

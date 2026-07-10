@@ -29,15 +29,15 @@ def test_build_idempotency_key_uses_explicit_value() -> None:
     assert build_idempotency_key(payload) == "custom-key"
 
 
-def test_ingestion_payload_accepts_info_app_distribution_fields() -> None:
+def test_ingestion_payload_uses_standard_contract_fields() -> None:
     document_id = uuid.uuid4()
     version_id = uuid.uuid4()
 
     payload = KnowledgeIngestionCreate.model_validate(
         {
-            "document_id": str(document_id),
-            "version_id": str(version_id),
-            "source_url": "https://example.com/news",
+            "source_document_id": str(document_id),
+            "source_document_version_id": str(version_id),
+            "canonical_url": "https://example.com/news",
             "title": "Example",
         }
     )
