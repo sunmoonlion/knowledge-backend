@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import uuid
 
-from app.application.services.knowledge_ingestion_service import build_idempotency_key
+from types import SimpleNamespace
+from typing import Any, cast
+
+from app.application.services.knowledge_ingestion_service import (
+    PROCESSOR_NAME,
+    build_idempotency_key,
+    build_processing_success_metadata,
+)
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
 from core.config import Settings
 
@@ -61,3 +68,19 @@ def test_database_url_uses_asyncpg_without_sslmode() -> None:
         "postgresql+asyncpg://knowledge:secret@postgresql:5432/knowledge"
         "?connect_timeout=10"
     )
+
+
+def test_build_processing_success_metadata_marks_mock_worker() -> None:
+    job = SimpleNamespace(
+        source_artifact_refs=[
+            {"artifact_type": "clean"},
+            {"artifact_type": "text"},
+        ]
+    )
+
+    metadata = build_processing_success_metadata(cast(Any, job))
+
+    assert metadata["processor"] == PROCESSOR_NAME
+    assert metadata["mode"] == "mock"
+    assert metadata["artifact_ref_count"] == 2
+    assert metadata["ragflow"] == "deferred"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from functools import lru_cache
+import uuid
 
 from celery.result import AsyncResult
 
@@ -38,6 +39,23 @@ class CeleryProducer:
         queue = get_settings().celery_queue
         async_result = ping.apply_async(queue=queue)
         logger.info("已投递 ping 任务 task_id=%s queue=%s", async_result.id, queue)
+        return async_result.id
+
+    def dispatch_knowledge_ingestion(self, ingestion_id: uuid.UUID) -> str:
+        """投递 knowledge ingestion 处理任务，返回 Celery task_id。"""
+        self._ensure_ready()
+        from app.tasks.knowledge_ingestion import process_knowledge_ingestion
+
+        queue = get_settings().celery_queue
+        async_result = process_knowledge_ingestion.apply_async(
+            args=[str(ingestion_id)], queue=queue
+        )
+        logger.info(
+            "已投递 process_knowledge_ingestion 任务 task_id=%s ingestion_id=%s queue=%s",
+            async_result.id,
+            ingestion_id,
+            queue,
+        )
         return async_result.id
 
     def get_task_result(self, task_id: str) -> AsyncResult:

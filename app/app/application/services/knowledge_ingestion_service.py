@@ -12,6 +12,7 @@ from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
 
 
 TERMINAL_STATUSES = {"succeeded", "failed"}
+PROCESSOR_NAME = "mock-ingestion-worker"
 
 
 def build_idempotency_key(payload: KnowledgeIngestionCreate) -> str:
@@ -156,3 +157,42 @@ async def update_ingestion_status(
     await session.commit()
     await session.refresh(job)
     return job
+
+
+def build_processing_success_metadata(job: KnowledgeIngestionJob) -> dict[str, Any]:
+    return {
+        "processor": PROCESSOR_NAME,
+        "mode": "mock",
+        "artifact_ref_count": len(job.source_artifact_refs or []),
+        "ragflow": "deferred",
+    }
+
+
+async def process_ingestion_job(
+    session: AsyncSession, *, ingestion_id: uuid.UUID
+) -> KnowledgeIngestionJob:
+    job = await get_ingestion_job(session, ingestion_id)
+    if job is None:
+        raise ValueError(f"ingestion job not found: {ingestion_id}")
+    if job.status in TERMINAL_STATUSES:
+        return job
+
+    job = await update_ingestion_status(
+        session,
+        ingestion_id=ingestion_id,
+        status="running",
+        last_error=None,
+        metadata={"processor": PROCESSOR_NAME},
+        knowledge_document_id=None,
+        ragflow_document_id=None,
+    )
+
+    return await update_ingestion_status(
+        session,
+        ingestion_id=ingestion_id,
+        status="succeeded",
+        last_error=None,
+        metadata=build_processing_success_metadata(job),
+        knowledge_document_id=f"mock-knowledge-doc:{job.id}",
+        ragflow_document_id=None,
+    )
