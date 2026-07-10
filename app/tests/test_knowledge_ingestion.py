@@ -170,7 +170,10 @@ async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
                 200,
                 json={"code": 0, "data": [{"id": "document-1", "name": "Inline-Smoke.txt"}]},
             )
-        if request.method == "POST" and request.url.path == "/api/v1/datasets/dataset-1/chunks":
+        if (
+            request.method == "POST"
+            and request.url.path == "/api/v1/datasets/dataset-1/documents/parse"
+        ):
             return httpx.Response(200, json={"code": 0})
         if request.method == "GET" and request.url.path == "/api/v1/datasets/dataset-1/documents/document-1":
             return httpx.Response(
@@ -217,7 +220,7 @@ async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
         ("GET", "/api/v1/datasets"),
         ("POST", "/api/v1/datasets"),
         ("POST", "/api/v1/datasets/dataset-1/documents"),
-        ("POST", "/api/v1/datasets/dataset-1/chunks"),
+        ("POST", "/api/v1/datasets/dataset-1/documents/parse"),
         ("GET", "/api/v1/datasets/dataset-1/documents/document-1"),
     ]
 

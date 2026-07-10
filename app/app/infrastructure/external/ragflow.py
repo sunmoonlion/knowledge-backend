@@ -97,7 +97,7 @@ class RAGFlowClient:
 
     async def parse_document(self, dataset_id: str, document_id: str) -> None:
         await self._request(
-            "POST", f"/datasets/{dataset_id}/chunks", json={"document_ids": [document_id]}
+            "POST", f"/datasets/{dataset_id}/documents/parse", json={"document_ids": [document_id]}
         )
 
     async def get_document(self, dataset_id: str, document_id: str) -> dict[str, Any]:
