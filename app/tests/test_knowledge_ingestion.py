@@ -175,17 +175,21 @@ async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
             and request.url.path == "/api/v1/datasets/dataset-1/documents/parse"
         ):
             return httpx.Response(200, json={"code": 0})
-        if request.method == "GET" and request.url.path == "/api/v1/datasets/dataset-1/documents/document-1":
+        if request.method == "GET" and request.url.path == "/api/v1/datasets/dataset-1/documents":
             return httpx.Response(
                 200,
                 json={
                     "code": 0,
                     "data": {
-                        "id": "document-1",
-                        "name": "Inline-Smoke.txt",
-                        "run": "DONE",
-                        "chunk_count": 2,
-                        "token_count": 8,
+                        "docs": [
+                            {
+                                "id": "document-1",
+                                "name": "Inline-Smoke.txt",
+                                "run": "DONE",
+                                "chunk_count": 2,
+                                "token_count": 8,
+                            }
+                        ],
                     },
                 },
             )
@@ -221,7 +225,7 @@ async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
         ("POST", "/api/v1/datasets", ""),
         ("POST", "/api/v1/datasets/dataset-1/documents", ""),
         ("POST", "/api/v1/datasets/dataset-1/documents/parse", ""),
-        ("GET", "/api/v1/datasets/dataset-1/documents/document-1", ""),
+        ("GET", "/api/v1/datasets/dataset-1/documents", "id=document-1"),
     ]
 
 

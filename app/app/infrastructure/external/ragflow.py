@@ -101,8 +101,14 @@ class RAGFlowClient:
         )
 
     async def get_document(self, dataset_id: str, document_id: str) -> dict[str, Any]:
-        data = await self._request("GET", f"/datasets/{dataset_id}/documents/{document_id}")
-        return data["data"]
+        data = await self._request(
+            "GET", f"/datasets/{dataset_id}/documents", params={"id": document_id}
+        )
+        docs = (data.get("data") or {}).get("docs") or []
+        for doc in docs:
+            if doc.get("id") == document_id:
+                return doc
+        raise RAGFlowError(f"RAGFlow document not found: {document_id}")
 
 
 async def ingest_into_ragflow(
