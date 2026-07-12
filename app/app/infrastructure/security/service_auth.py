@@ -20,6 +20,8 @@ class ServiceAuthVerifier:
         service_settings = self._settings.model_copy(
             update={
                 "casdoor_application": self._settings.internal_auth_casdoor_application,
+                "casdoor_discovery_url": self._settings.internal_auth_discovery_url
+                or self._settings.casdoor_discovery_url,
                 "casdoor_client_id": self._settings.internal_auth_audience or "",
                 "casdoor_client_secret": "",
                 "casdoor_redirect_uri": "",
