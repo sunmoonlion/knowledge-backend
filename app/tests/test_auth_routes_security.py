@@ -119,4 +119,7 @@ def test_every_non_auth_api_route_has_admin_auth_dependency() -> None:
             getattr(dependency.call, "__name__", "")
             for dependency in route.dependant.dependencies
         }
-        assert "dependency" in calls, route.path
+        if route.path.startswith("/api/internal/"):
+            assert "require_knowledge_ingest_service" in calls, route.path
+        else:
+            assert "dependency" in calls, route.path

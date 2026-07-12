@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.services import knowledge_ingestion_service
 from app.infrastructure.messaging.celery_producer import get_celery_producer
 from app.infrastructure.storage.postgres import get_db_session
+from app.domain.security import Principal
 from app.interfaces.schemas.knowledge import (
     KnowledgeIngestionCreate,
     KnowledgeIngestionRead,
@@ -16,8 +17,13 @@ from app.interfaces.schemas.knowledge import (
     KnowledgeIngestionStatusUpdate,
     RAGFlowConfigCheckRead,
 )
+from app.infrastructure.security.service_auth import require_knowledge_ingest_service
 
 router = APIRouter(prefix="/knowledge", tags=["知识入库"])
+internal_router = APIRouter(
+    prefix="/internal/v1/knowledge",
+    tags=["内部-知识入库"],
+)
 
 
 @router.post(
@@ -29,6 +35,27 @@ async def submit_ingestion(
     payload: KnowledgeIngestionCreate,
     session: AsyncSession = Depends(get_db_session),
 ):
+    job = await knowledge_ingestion_service.submit_ingestion(session, payload)
+    producer = get_celery_producer()
+    if job.status == "accepted" and producer.enabled:
+        producer.dispatch_knowledge_ingestion(job.id)
+    return job
+
+
+@internal_router.post(
+    "/ingestions",
+    response_model=KnowledgeIngestionRead,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def submit_internal_ingestion(
+    payload: KnowledgeIngestionCreate,
+    service_principal: Principal = Depends(require_knowledge_ingest_service),
+    session: AsyncSession = Depends(get_db_session),
+):
+    # The service principal is verified by the dependency. It is deliberately
+    # not accepted from the JSON payload and is available for audit enrichment
+    # when the ingestion journal is extended.
+    _ = service_principal
     job = await knowledge_ingestion_service.submit_ingestion(session, payload)
     producer = get_celery_producer()
     if job.status == "accepted" and producer.enabled:

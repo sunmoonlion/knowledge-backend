@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     auth_policy_version: str = "knowledge-admin-v1"
     session_cookie_secure: bool | None = None
 
+    # Service-to-service resource server boundary.
+    internal_auth_casdoor_application: str = "sunmoonai-info-knowledge-ingest"
+    internal_auth_audience: str | None = None
+    internal_auth_subject_allowlist: str = ""
+    internal_auth_required_scope: str = "knowledge:ingest"
+
     # Frontend
     # Used for post-login redirects from backend callback.
     frontend_base_url: str = "http://localhost:5173"
@@ -115,6 +121,14 @@ class Settings(BaseSettings):
         if self.session_cookie_secure is not None:
             return self.session_cookie_secure
         return self.env not in {"development", "test"}
+
+    @property
+    def internal_auth_subjects(self) -> frozenset[str]:
+        return frozenset(
+            item.strip()
+            for item in self.internal_auth_subject_allowlist.split(",")
+            if item.strip()
+        )
 
     # Celery（应用层只读 CELERY_BROKER_URL；k8s 按 Deployment 注入 producer/worker 账号）
     celery_broker_url: str | None = Field(
