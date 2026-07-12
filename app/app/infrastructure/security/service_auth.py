@@ -37,7 +37,7 @@ class ServiceAuthVerifier:
         last_error: Exception | None = None
         for refresh in (False, True):
             try:
-                key_set = await self._oidc._get_key_set(metadata, force_refresh=refresh)
+                key_set = await self._oidc.get_key_set(metadata, force_refresh=refresh)
                 token = jwt.decode(
                     encoded,
                     key_set,

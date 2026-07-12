@@ -36,7 +36,7 @@ class FakeOidc:
             jwks_uri="https://identity.example.test/jwks",
         )
 
-    async def _get_key_set(self, metadata, *, force_refresh: bool = False):
+    async def get_key_set(self, metadata, *, force_refresh: bool = False):
         return self.key_set
 
 

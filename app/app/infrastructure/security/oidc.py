@@ -129,6 +129,12 @@ class OidcProviderClient:
         self._keys_loaded_at = now
         return key_set
 
+    async def get_key_set(
+        self, metadata: OidcMetadata, *, force_refresh: bool = False
+    ) -> KeySet:
+        """Return the cached provider key set through the public verifier API."""
+        return await self._get_key_set(metadata, force_refresh=force_refresh)
+
     async def build_authorization_url(
         self,
         *,
@@ -229,4 +235,3 @@ class OidcProviderClient:
             except (JoseError, ValueError, TypeError) as exc:
                 last_error = exc
         raise UnauthorizedError("OIDC ID token invalid") from last_error
-
