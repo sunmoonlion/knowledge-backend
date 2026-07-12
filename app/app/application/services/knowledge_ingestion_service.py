@@ -16,6 +16,7 @@ from app.infrastructure.external.ragflow import (
     resolve_artifact_content,
 )
 from app.infrastructure.models.knowledge import KnowledgeIngestionJob
+from app.domain.security import Principal
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
 
 
@@ -58,12 +59,30 @@ def _payload_dict(payload: KnowledgeIngestionCreate, idempotency_key: str) -> di
 
 
 async def submit_ingestion(
-    session: AsyncSession, payload: KnowledgeIngestionCreate
+    session: AsyncSession,
+    payload: KnowledgeIngestionCreate,
+    *,
+    service_principal: Principal | None = None,
 ) -> KnowledgeIngestionJob:
     idempotency_key = build_idempotency_key(payload)
     existing = await get_ingestion_by_idempotency_key(session, idempotency_key)
     if existing is not None:
         return existing
+
+    accepted_metadata: dict[str, Any] | None = None
+    if service_principal is not None:
+        accepted_metadata = {
+            "service_principal": {
+                "actor_type": service_principal.actor_type,
+                "subject": service_principal.subject,
+                "issuer": service_principal.issuer,
+                "audience": service_principal.audience,
+                "app": service_principal.app,
+                "surface": service_principal.surface,
+                "scopes": sorted(service_principal.scopes),
+                "policy_version": service_principal.policy_version,
+            }
+        }
 
     job = KnowledgeIngestionJob(
         source_app=payload.source_app,
@@ -80,7 +99,7 @@ async def submit_ingestion(
         metadata_json=payload.document.metadata,
         payload=_payload_dict(payload, idempotency_key),
         status="accepted",
-        status_history=[_status_entry("accepted")],
+        status_history=[_status_entry("accepted", metadata=accepted_metadata)],
     )
     session.add(job)
     await session.commit()

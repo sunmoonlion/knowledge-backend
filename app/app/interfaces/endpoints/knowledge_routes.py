@@ -52,11 +52,11 @@ async def submit_internal_ingestion(
     service_principal: Principal = Depends(require_knowledge_ingest_service),
     session: AsyncSession = Depends(get_db_session),
 ):
-    # The service principal is verified by the dependency. It is deliberately
-    # not accepted from the JSON payload and is available for audit enrichment
-    # when the ingestion journal is extended.
-    _ = service_principal
-    job = await knowledge_ingestion_service.submit_ingestion(session, payload)
+    # The service principal is verified by the dependency and recorded in the
+    # accepted status journal; it is never accepted from the JSON payload.
+    job = await knowledge_ingestion_service.submit_ingestion(
+        session, payload, service_principal=service_principal
+    )
     producer = get_celery_producer()
     if job.status == "accepted" and producer.enabled:
         producer.dispatch_knowledge_ingestion(job.id)
