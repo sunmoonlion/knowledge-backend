@@ -10,7 +10,7 @@ from app.worker import celery_app
 
 @celery_app.task(name="app.tasks.process_knowledge_ingestion")
 def process_knowledge_ingestion(ingestion_id: str) -> str:
-    """Process one knowledge ingestion job through the M1 mock worker."""
+    """Process one Knowledge ingestion job through the configured real processor."""
     return asyncio.run(_run(uuid.UUID(ingestion_id)))
 
 

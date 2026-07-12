@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
-
-import httpx
-import pytest
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+
+import httpx
+import jsonschema
+import pytest
+from pydantic import ValidationError
 
 from app.application.services.knowledge_ingestion_service import (
     PROCESSOR_NAME,
@@ -31,46 +36,127 @@ from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
 from core.config import Settings
 
 
-def test_build_idempotency_key_defaults_dataset() -> None:
-    version_id = uuid.uuid4()
-    payload = KnowledgeIngestionCreate(
-        source_app="info-app",
-        source_document_id=uuid.uuid4(),
-        source_document_version_id=version_id,
+CONTRACT_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "contracts/artifact/v1/info-knowledge-artifact.schema.json"
+)
+CONTRACT_MANIFEST_PATH = CONTRACT_PATH.with_name("contract-manifest.json")
+CONTRACT_EXAMPLE_PATH = CONTRACT_PATH.parent / "examples/upsert.json"
+
+
+def _contract_payload() -> dict[str, Any]:
+    document_id = uuid.UUID("00000000-0000-0000-0000-000000000010")
+    version_id = uuid.UUID("00000000-0000-0000-0000-000000000011")
+    distribution_id = uuid.UUID("00000000-0000-0000-0000-000000000012")
+    return {
+        "contract_version": 1,
+        "operation": "upsert",
+        "distribution_id": str(distribution_id),
+        "source_app": "info-app",
+        "source_document_id": str(document_id),
+        "source_document_version_id": str(version_id),
+        "artifact": {
+            "artifact_type": "clean_markdown",
+            "uri": "s3://development-info-originals/info/original/doc/clean.md",
+            "storage_version": "version-1",
+            "sha256": "a" * 64,
+            "size_bytes": 7,
+            "content_type": "text/markdown; charset=utf-8",
+        },
+        "dataset_key": "market-news",
+        "idempotency_key": f"info-app:{version_id}:market-news:artifact-v1",
+        "correlation_id": str(distribution_id),
+        "causation_id": str(version_id),
+        "document": {
+            "title": "Example",
+            "canonical_url": "https://example.com/news",
+            "content_hash": "b" * 64,
+            "source_name": "Example Source",
+            "published_at": None,
+            "metadata": {},
+        },
+    }
+
+
+def _patch_s3_http(monkeypatch, handler) -> None:
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.infrastructure.external.ragflow.httpx.AsyncClient",
+        lambda *args, **kwargs: real_async_client(transport=transport),
     )
 
-    assert build_idempotency_key(payload) == f"info-app:{version_id}:default"
+
+def _s3_settings() -> Settings:
+    return Settings(
+        S3_ENDPOINT="http://minio:9000",
+        S3_ACCESS_KEY_ID="access",
+        S3_SECRET_ACCESS_KEY="secret",
+    )
+
+
+def test_build_idempotency_key_defaults_dataset() -> None:
+    payload = KnowledgeIngestionCreate.model_validate(_contract_payload())
+
+    assert build_idempotency_key(payload) == payload.idempotency_key
 
 
 def test_build_idempotency_key_uses_explicit_value() -> None:
-    payload = KnowledgeIngestionCreate(
-        source_app="info-app",
-        source_document_id=uuid.uuid4(),
-        source_document_version_id=uuid.uuid4(),
-        target_dataset="market-news",
-        idempotency_key="custom-key",
-    )
+    raw = _contract_payload()
+    raw["idempotency_key"] = "custom-key"
+    payload = KnowledgeIngestionCreate.model_validate(raw)
 
     assert build_idempotency_key(payload) == "custom-key"
 
 
 def test_ingestion_payload_uses_standard_contract_fields() -> None:
-    document_id = uuid.uuid4()
-    version_id = uuid.uuid4()
+    raw = _contract_payload()
+    schema_bytes = CONTRACT_PATH.read_bytes()
+    manifest = json.loads(CONTRACT_MANIFEST_PATH.read_text())
+    assert manifest["major_version"] == 1
+    assert hashlib.sha256(schema_bytes).hexdigest() == manifest["sha256"]
+    jsonschema.Draft202012Validator(
+        json.loads(schema_bytes),
+        format_checker=jsonschema.FormatChecker(),
+    ).validate(raw)
+    payload = KnowledgeIngestionCreate.model_validate(raw)
 
-    payload = KnowledgeIngestionCreate.model_validate(
-        {
-            "source_document_id": str(document_id),
-            "source_document_version_id": str(version_id),
-            "canonical_url": "https://example.com/news",
-            "title": "Example",
-        }
-    )
+    assert payload.contract_version == 1
+    assert payload.dataset_key == "market-news"
+    assert payload.document.canonical_url == "https://example.com/news"
+    assert payload.artifact.storage_version == "version-1"
 
-    assert payload.source_app == "info-app"
-    assert payload.source_document_id == document_id
-    assert payload.source_document_version_id == version_id
-    assert payload.canonical_url == "https://example.com/news"
+
+def test_published_artifact_contract_example_is_valid() -> None:
+    schema = json.loads(CONTRACT_PATH.read_text())
+    example = json.loads(CONTRACT_EXAMPLE_PATH.read_text())
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.Draft202012Validator(
+        schema,
+        format_checker=jsonschema.FormatChecker(),
+    ).validate(example)
+    KnowledgeIngestionCreate.model_validate(example)
+
+
+def test_ingestion_payload_rejects_legacy_and_unversioned_artifacts() -> None:
+    legacy = {
+        "source_app": "info-app",
+        "source_document_id": str(uuid.uuid4()),
+        "source_document_version_id": str(uuid.uuid4()),
+        "source_artifact_refs": [{"uri": "info-artifact:123"}],
+    }
+    with pytest.raises(ValidationError):
+        KnowledgeIngestionCreate.model_validate(legacy)
+
+    raw = _contract_payload()
+    del raw["artifact"]["storage_version"]
+    with pytest.raises(ValidationError):
+        KnowledgeIngestionCreate.model_validate(raw)
+
+    raw = _contract_payload()
+    raw["artifact"]["size_bytes"] = 52_428_801
+    with pytest.raises(ValidationError):
+        KnowledgeIngestionCreate.model_validate(raw)
 
 
 def test_database_url_uses_asyncpg_without_sslmode() -> None:
@@ -87,7 +173,7 @@ def test_database_url_uses_asyncpg_without_sslmode() -> None:
     )
 
 
-def test_build_processing_success_metadata_marks_mock_worker() -> None:
+def test_build_processing_success_metadata_marks_artifact_verification() -> None:
     job = SimpleNamespace(
         source_artifact_refs=[
             {"artifact_type": "clean"},
@@ -98,9 +184,9 @@ def test_build_processing_success_metadata_marks_mock_worker() -> None:
     metadata = build_processing_success_metadata(cast(Any, job))
 
     assert metadata["processor"] == PROCESSOR_NAME
-    assert metadata["mode"] == "mock"
+    assert metadata["mode"] == "artifact_verification"
     assert metadata["artifact_ref_count"] == 2
-    assert metadata["ragflow"] == "deferred"
+    assert metadata["ragflow"] == "not_requested"
 
 
 def test_build_ragflow_success_metadata_marks_processed() -> None:
@@ -122,20 +208,176 @@ def test_build_ragflow_success_metadata_marks_processed() -> None:
     assert metadata["ragflow_chunk_count"] == 3
 
 
-async def test_resolve_artifact_content_uses_inline_metadata() -> None:
+async def test_resolve_artifact_content_verifies_version_size_type_and_hash(
+    monkeypatch,
+) -> None:
+    content = b"# hello"
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, str(request.url)))
+        headers = {
+            "content-length": str(len(content)),
+            "content-type": "text/markdown; charset=utf-8",
+            "x-amz-version-id": "version-1",
+        }
+        return httpx.Response(200, headers=headers, content=b"" if request.method == "HEAD" else content)
+
+    _patch_s3_http(monkeypatch, handler)
     artifact = await resolve_artifact_content(
-        settings=Settings(),
-        source_artifact_refs=[],
-        title="Inline Smoke",
+        settings=_s3_settings(),
+        source_artifact_refs=[
+            {
+                "artifact_type": "clean_markdown",
+                "uri": "s3://development-info-originals/info/original/doc/clean.md",
+                "storage_version": "version-1",
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "size_bytes": len(content),
+                "content_type": "text/markdown; charset=utf-8",
+            }
+        ],
+        title="Contract Smoke",
         canonical_url=None,
-        metadata_json={"markdown": "# hello"},
+        metadata_json={"markdown": "this inline value must be ignored"},
         source_document_version_id="version-1",
     )
 
     assert isinstance(artifact, ArtifactContent)
-    assert artifact.filename == "Inline-Smoke.txt"
-    assert artifact.content == b"# hello"
-    assert artifact.content_type == "text/plain; charset=utf-8"
+    assert artifact.filename == "clean.md"
+    assert artifact.content == content
+    assert artifact.content_type == "text/markdown; charset=utf-8"
+    assert [method for method, _ in calls] == ["HEAD", "GET"]
+    assert all("versionId=version-1" in url for _, url in calls)
+
+
+async def test_resolve_artifact_content_rejects_non_s3_and_disallowed_bucket() -> None:
+    settings = Settings()
+    with pytest.raises(RAGFlowError, match="only accepts s3"):
+        await resolve_artifact_content(
+            settings=settings,
+            source_artifact_refs=[{"uri": "https://example.com/doc"}],
+            title=None,
+            canonical_url=None,
+            metadata_json={},
+            source_document_version_id="version-1",
+        )
+
+    ref = _contract_payload()["artifact"]
+    ref["uri"] = "s3://private-bucket/info/original/doc/clean.md"
+    with pytest.raises(RAGFlowError, match="bucket is not allowed"):
+        await resolve_artifact_content(
+            settings=settings,
+            source_artifact_refs=[ref],
+            title=None,
+            canonical_url=None,
+            metadata_json={},
+            source_document_version_id="version-1",
+        )
+
+    ref = _contract_payload()["artifact"]
+    ref["uri"] = "s3://development-info-originals/private/doc/clean.md"
+    with pytest.raises(RAGFlowError, match="outside the allowed prefixes"):
+        await resolve_artifact_content(
+            settings=settings,
+            source_artifact_refs=[ref],
+            title=None,
+            canonical_url=None,
+            metadata_json={},
+            source_document_version_id="version-1",
+        )
+
+
+@pytest.mark.parametrize("status_code", [403, 404])
+async def test_resolve_artifact_content_classifies_s3_access_failures(
+    monkeypatch, status_code: int
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, request=request)
+
+    _patch_s3_http(monkeypatch, handler)
+    with pytest.raises(RAGFlowError, match=f"HTTP {status_code}"):
+        await resolve_artifact_content(
+            settings=_s3_settings(),
+            source_artifact_refs=[_contract_payload()["artifact"]],
+            title=None,
+            canonical_url=None,
+            metadata_json={},
+            source_document_version_id="version-1",
+        )
+
+
+@pytest.mark.parametrize(
+    ("header_version", "expected_hash", "message"),
+    [
+        ("wrong-version", hashlib.sha256(b"# hello").hexdigest(), "storage version mismatch"),
+        ("version-1", "0" * 64, "sha256 mismatch"),
+    ],
+)
+async def test_resolve_artifact_content_rejects_version_and_hash_mismatch(
+    monkeypatch, header_version: str, expected_hash: str, message: str
+) -> None:
+    content = b"# hello"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {
+            "content-length": str(len(content)),
+            "content-type": "text/markdown",
+            "x-amz-version-id": header_version,
+        }
+        return httpx.Response(
+            200,
+            request=request,
+            headers=headers,
+            content=b"" if request.method == "HEAD" else content,
+        )
+
+    _patch_s3_http(monkeypatch, handler)
+    ref = _contract_payload()["artifact"]
+    ref["sha256"] = expected_hash
+    ref["content_type"] = "text/markdown"
+    with pytest.raises(RAGFlowError, match=message):
+        await resolve_artifact_content(
+            settings=_s3_settings(),
+            source_artifact_refs=[ref],
+            title=None,
+            canonical_url=None,
+            metadata_json={},
+            source_document_version_id="version-1",
+        )
+
+
+async def test_resolve_artifact_content_rejects_body_larger_than_declared(
+    monkeypatch,
+) -> None:
+    declared = b"1234567"
+    actual = declared + b"8"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {
+            "content-length": str(len(declared)),
+            "content-type": "text/markdown",
+            "x-amz-version-id": "version-1",
+        }
+        return httpx.Response(
+            200,
+            request=request,
+            headers=headers,
+            content=b"" if request.method == "HEAD" else actual,
+        )
+
+    _patch_s3_http(monkeypatch, handler)
+    ref = _contract_payload()["artifact"]
+    ref["sha256"] = hashlib.sha256(declared).hexdigest()
+    ref["content_type"] = "text/markdown"
+    with pytest.raises(RAGFlowError, match="exceeded the declared artifact size"):
+        await resolve_artifact_content(
+            settings=_s3_settings(),
+            source_artifact_refs=[ref],
+            title=None,
+            canonical_url=None,
+            metadata_json={},
+            source_document_version_id="version-1",
+        )
 
 
 def test_s3_sigv4_headers_include_signed_authorization() -> None:
@@ -206,7 +448,18 @@ async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
     def make_client(settings: Settings) -> RAGFlowClient:
         return RAGFlowClient(settings, client=client)
 
+    async def resolve_contract_artifact(**kwargs: Any) -> ArtifactContent:
+        return ArtifactContent(
+            filename="Inline-Smoke.txt",
+            content=b"hello",
+            content_type="text/plain",
+        )
+
     monkeypatch.setattr("app.infrastructure.external.ragflow.RAGFlowClient", make_client)
+    monkeypatch.setattr(
+        "app.infrastructure.external.ragflow.resolve_artifact_content",
+        resolve_contract_artifact,
+    )
     result = await ingest_into_ragflow(
         settings=Settings(
             RAGFLOW_API_BASE="http://ragflow:9380",
@@ -216,8 +469,8 @@ async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
         target_dataset="target",
         title="Inline Smoke",
         canonical_url=None,
-        source_artifact_refs=[],
-        metadata_json={"text": "hello"},
+        source_artifact_refs=[_contract_payload()["artifact"]],
+        metadata_json={},
         source_document_version_id="version-1",
     )
     await client.aclose()

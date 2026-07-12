@@ -13,6 +13,7 @@ from app.infrastructure.external.ragflow import (
     RAGFlowError,
     check_ragflow_config,
     ingest_into_ragflow,
+    resolve_artifact_content,
 )
 from app.infrastructure.models.knowledge import KnowledgeIngestionJob
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
@@ -25,17 +26,15 @@ TERMINAL_STATUSES = {
     "ragflow_parse_failed",
     "artifact_unreadable",
     "external_api_error",
+    "artifact_verified",
 }
 RETRY_BLOCKED_STATUSES = {"ragflow_config_error"}
-PROCESSOR_NAME = "mock-ingestion-worker"
+PROCESSOR_NAME = "artifact-contract-verifier"
 RAGFLOW_PROCESSOR_NAME = "ragflow-ingestion-worker"
 
 
 def build_idempotency_key(payload: KnowledgeIngestionCreate) -> str:
-    if payload.idempotency_key:
-        return payload.idempotency_key
-    dataset = payload.target_dataset or "default"
-    return f"{payload.source_app}:{payload.source_document_version_id}:{dataset}"
+    return payload.idempotency_key
 
 
 def _status_entry(
@@ -53,22 +52,9 @@ def _status_entry(
 
 
 def _payload_dict(payload: KnowledgeIngestionCreate, idempotency_key: str) -> dict[str, Any]:
-    return {
-        "source_app": payload.source_app,
-        "source_document_id": str(payload.source_document_id),
-        "source_document_version_id": str(payload.source_document_version_id),
-        "source_artifact_refs": [
-            item.model_dump(exclude_none=True) for item in payload.source_artifact_refs
-        ],
-        "title": payload.title,
-        "canonical_url": payload.canonical_url,
-        "source_name": payload.source_name,
-        "content_hash": payload.content_hash,
-        "metadata": payload.metadata,
-        "target_dataset": payload.target_dataset,
-        "profile_key": payload.profile_key,
-        "idempotency_key": idempotency_key,
-    }
+    result = payload.model_dump(mode="json", exclude_none=True)
+    result["idempotency_key"] = idempotency_key
+    return result
 
 
 async def submit_ingestion(
@@ -83,17 +69,15 @@ async def submit_ingestion(
         source_app=payload.source_app,
         source_document_id=payload.source_document_id,
         source_document_version_id=payload.source_document_version_id,
-        target_dataset=payload.target_dataset,
-        profile_key=payload.profile_key,
+        target_dataset=payload.dataset_key,
+        profile_key="markdown",
         idempotency_key=idempotency_key,
-        title=payload.title,
-        canonical_url=payload.canonical_url,
-        source_name=payload.source_name,
-        content_hash=payload.content_hash,
-        source_artifact_refs=[
-            item.model_dump(exclude_none=True) for item in payload.source_artifact_refs
-        ],
-        metadata_json=payload.metadata,
+        title=payload.document.title,
+        canonical_url=payload.document.canonical_url,
+        source_name=payload.document.source_name,
+        content_hash=payload.document.content_hash,
+        source_artifact_refs=[payload.artifact.model_dump(mode="json")],
+        metadata_json=payload.document.metadata,
         payload=_payload_dict(payload, idempotency_key),
         status="accepted",
         status_history=[_status_entry("accepted")],
@@ -196,7 +180,19 @@ async def update_ingestion_status(
 def classify_ingestion_error(exc: BaseException) -> tuple[str, dict[str, Any]]:
     message = str(exc)
     message_lower = message.lower()
-    if "no readable artifact content" in message_lower or "s3 artifact provided" in message_lower:
+    if any(
+        marker in message_lower
+        for marker in (
+            "artifact",
+            "s3 object",
+            "s3 endpoint",
+            "bucket",
+            "object key",
+            "sha256",
+            "content type",
+            "storage version",
+        )
+    ):
         return "artifact_unreadable", {"error_type": "artifact_unreadable"}
     if "no default embedding model" in message_lower:
         return "ragflow_config_error", {"error_type": "ragflow_config_error"}
@@ -276,9 +272,9 @@ async def get_ragflow_config_check() -> dict[str, Any]:
 def build_processing_success_metadata(job: KnowledgeIngestionJob) -> dict[str, Any]:
     return {
         "processor": PROCESSOR_NAME,
-        "mode": "mock",
+        "mode": "artifact_verification",
         "artifact_ref_count": len(job.source_artifact_refs or []),
-        "ragflow": "deferred",
+        "ragflow": "not_requested",
     }
 
 
@@ -351,12 +347,36 @@ async def process_ingestion_job(
             ragflow_document_id=result.document_id,
         )
 
+    try:
+        artifact = await resolve_artifact_content(
+            settings=settings,
+            source_artifact_refs=list(job.source_artifact_refs or []),
+            title=job.title,
+            canonical_url=job.canonical_url,
+            metadata_json=dict(job.metadata_json or {}),
+            source_document_version_id=str(job.source_document_version_id),
+        )
+    except (RAGFlowError, OSError, ValueError) as exc:
+        failure_status, failure_metadata = classify_ingestion_error(exc)
+        return await update_ingestion_status(
+            session,
+            ingestion_id=ingestion_id,
+            status=failure_status,
+            last_error=str(exc),
+            metadata={"processor": PROCESSOR_NAME, **failure_metadata},
+            knowledge_document_id=None,
+            ragflow_document_id=None,
+        )
     return await update_ingestion_status(
         session,
         ingestion_id=ingestion_id,
-        status="succeeded",
+        status="artifact_verified",
         last_error=None,
-        metadata=build_processing_success_metadata(job),
-        knowledge_document_id=f"mock-knowledge-doc:{job.id}",
+        metadata={
+            **build_processing_success_metadata(job),
+            "verified_size_bytes": len(artifact.content),
+            "verified_content_type": artifact.content_type,
+        },
+        knowledge_document_id=None,
         ragflow_document_id=None,
     )
