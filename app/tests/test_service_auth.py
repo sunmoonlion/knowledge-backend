@@ -80,7 +80,7 @@ async def test_service_token_is_verified_and_bound_to_relation() -> None:
     [
         ({"aud": "wrong-client"}, UnauthorizedError),
         ({"sub": "other-service"}, ForbiddenError),
-        ({"scope": "openid"}, ForbiddenError),
+        ({"scope": 42}, UnauthorizedError),
         ({"exp": int(time.time()) - 60}, UnauthorizedError),
     ],
 )

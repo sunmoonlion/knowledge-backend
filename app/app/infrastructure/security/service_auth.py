@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from datetime import UTC, datetime
 from typing import Any
 
@@ -81,18 +80,20 @@ class ServiceAuthVerifier:
         raise UnauthorizedError("service token invalid") from last_error
 
     def _validate_scope(self, claims: dict[str, Any]) -> None:
-        required = self._settings.internal_auth_required_scope
+        # Casdoor client-credentials tokens may expose only the provider's
+        # `openid` scope. The relation-specific scope is granted by the local
+        # subject allowlist and represented on the returned Principal.
         raw_scope = claims.get("scope", claims.get("scp"))
         if raw_scope is None:
             return
         if isinstance(raw_scope, str):
-            scopes = set(raw_scope.split())
+            return
         elif isinstance(raw_scope, list):
-            scopes = {item for item in raw_scope if isinstance(item, str)}
+            if not all(isinstance(item, str) for item in raw_scope):
+                raise UnauthorizedError("service token scope invalid")
+            return
         else:
             raise UnauthorizedError("service token scope invalid")
-        if required not in scopes:
-            raise ForbiddenError("service token scope missing")
 
 
 _verifier: ServiceAuthVerifier | None = None
