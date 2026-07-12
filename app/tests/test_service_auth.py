@@ -24,6 +24,20 @@ def _settings() -> Settings:
     )
 
 
+def test_service_verifier_uses_explicit_service_discovery_url() -> None:
+    settings = _settings().model_copy(
+        update={
+            "casdoor_discovery_url": "https://identity.example.test/.well-known/browser/openid-configuration",
+            "internal_auth_discovery_url": "https://identity.example.test/.well-known/openid-configuration",
+        }
+    )
+    verifier = ServiceAuthVerifier(settings)
+
+    assert verifier._oidc._settings.casdoor_discovery_url == (
+        "https://identity.example.test/.well-known/openid-configuration"
+    )
+
+
 class FakeOidc:
     def __init__(self, key_set) -> None:
         self.key_set = key_set
