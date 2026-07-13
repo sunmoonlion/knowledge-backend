@@ -38,6 +38,22 @@ def test_service_verifier_uses_explicit_service_discovery_url() -> None:
     )
 
 
+def test_internal_discovery_does_not_inherit_browser_backchannel() -> None:
+    settings = _settings().model_copy(
+        update={
+            "casdoor_endpoint": "https://browser-identity.example.test",
+            "casdoor_backchannel_endpoint": "http://casdoor-sunmoonai:8000",
+            "internal_auth_discovery_url": (
+                "http://casdoor-sunmoonai:8000/.well-known/openid-configuration"
+            ),
+        }
+    )
+    verifier = ServiceAuthVerifier(settings)
+
+    assert verifier._oidc._settings.casdoor_endpoint == "http://casdoor-sunmoonai:8000"
+    assert verifier._oidc._settings.casdoor_backchannel_endpoint is None
+
+
 class FakeOidc:
     def __init__(self, key_set) -> None:
         self.key_set = key_set

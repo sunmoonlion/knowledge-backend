@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import Header
 from joserfc import jwt
@@ -17,11 +18,23 @@ from core.config import Settings, get_settings
 class ServiceAuthVerifier:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or get_settings()
+        service_discovery_url = (
+            self._settings.internal_auth_discovery_url
+            or self._settings.casdoor_discovery_url
+        )
+        service_endpoint = self._settings.casdoor_endpoint
+        if service_discovery_url:
+            parsed = urlsplit(service_discovery_url)
+            if parsed.scheme in {"http", "https"} and parsed.hostname:
+                service_endpoint = urlunsplit(
+                    (parsed.scheme, parsed.netloc, "", "", "")
+                )
         service_settings = self._settings.model_copy(
             update={
+                "casdoor_endpoint": service_endpoint,
                 "casdoor_application": self._settings.internal_auth_casdoor_application,
-                "casdoor_discovery_url": self._settings.internal_auth_discovery_url
-                or self._settings.casdoor_discovery_url,
+                "casdoor_discovery_url": service_discovery_url,
+                "casdoor_backchannel_endpoint": None,
                 "casdoor_client_id": self._settings.internal_auth_audience or "",
                 "casdoor_client_secret": "",
                 "casdoor_redirect_uri": "",
