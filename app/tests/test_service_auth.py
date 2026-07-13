@@ -38,19 +38,36 @@ def test_service_verifier_uses_explicit_service_discovery_url() -> None:
     )
 
 
-def test_internal_discovery_does_not_inherit_browser_backchannel() -> None:
+def test_internal_discovery_uses_only_explicit_service_backchannel() -> None:
     settings = _settings().model_copy(
         update={
             "casdoor_endpoint": "https://browser-identity.example.test",
             "casdoor_backchannel_endpoint": "http://casdoor-sunmoonai:8000",
             "internal_auth_discovery_url": (
-                "http://casdoor-sunmoonai:8000/.well-known/openid-configuration"
+                "https://identity.example.test/.well-known/openid-configuration"
+            ),
+            "internal_auth_backchannel_endpoint": "http://casdoor-service:8000",
+        }
+    )
+    verifier = ServiceAuthVerifier(settings)
+
+    assert verifier._oidc._settings.casdoor_endpoint == "https://identity.example.test"
+    assert verifier._oidc._settings.casdoor_backchannel_endpoint == (
+        "http://casdoor-service:8000"
+    )
+
+
+def test_internal_discovery_does_not_inherit_browser_backchannel() -> None:
+    settings = _settings().model_copy(
+        update={
+            "casdoor_backchannel_endpoint": "http://browser-casdoor:8000",
+            "internal_auth_discovery_url": (
+                "https://identity.example.test/.well-known/openid-configuration"
             ),
         }
     )
     verifier = ServiceAuthVerifier(settings)
 
-    assert verifier._oidc._settings.casdoor_endpoint == "http://casdoor-sunmoonai:8000"
     assert verifier._oidc._settings.casdoor_backchannel_endpoint is None
 
 
@@ -60,7 +77,7 @@ class FakeOidc:
 
     async def get_metadata(self):
         return OidcMetadata(
-            issuer="https://identity.example.test/.well-known/sunmoonai-info-knowledge-ingest",
+            issuer="https://identity.example.test",
             authorization_endpoint="https://identity.example.test/authorize",
             token_endpoint="https://identity.example.test/token",
             jwks_uri="https://identity.example.test/jwks",
@@ -73,7 +90,7 @@ class FakeOidc:
 def _token(key: RSAKey, **overrides) -> str:
     now = int(time.time())
     claims = {
-        "iss": "https://identity.example.test/.well-known/sunmoonai-info-knowledge-ingest",
+        "iss": "https://identity.example.test",
         "sub": "service-subject",
         "aud": "service-client",
         "iat": now,

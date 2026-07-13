@@ -34,7 +34,9 @@ class ServiceAuthVerifier:
                 "casdoor_endpoint": service_endpoint,
                 "casdoor_application": self._settings.internal_auth_casdoor_application,
                 "casdoor_discovery_url": service_discovery_url,
-                "casdoor_backchannel_endpoint": None,
+                "casdoor_backchannel_endpoint": (
+                    self._settings.internal_auth_backchannel_endpoint
+                ),
                 "casdoor_client_id": self._settings.internal_auth_audience or "",
                 "casdoor_client_secret": "",
                 "casdoor_redirect_uri": "",

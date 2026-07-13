@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     # Service-to-service resource server boundary.
     internal_auth_casdoor_application: str = "sunmoonai-info-knowledge-ingest"
     internal_auth_discovery_url: str | None = None
+    # Explicit transport-only origin for service discovery/JWKS. It is kept
+    # separate from the browser backchannel so one trust boundary cannot
+    # silently inherit another boundary's routing configuration.
+    internal_auth_backchannel_endpoint: str | None = None
     internal_auth_audience: str | None = None
     internal_auth_subject_allowlist: str = ""
     internal_auth_required_scope: str = "knowledge:ingest"
