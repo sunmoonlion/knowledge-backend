@@ -12,10 +12,12 @@ class Settings(BaseSettings):
 
     # 数据库（读 DATABASE_URL，自动补 +asyncpg 驱动前缀）
     database_url: str = "postgresql+asyncpg://knowledge:knowledge@localhost:5432/knowledge"
+    # 仅 Alembic migration Job 使用；运行时 Deployment 不注入该值。
+    migration_database_url: str | None = None
 
-    @field_validator("database_url", mode="before")
+    @field_validator("database_url", "migration_database_url", mode="before")
     @classmethod
-    def ensure_asyncpg(cls, v: str) -> str:
+    def ensure_asyncpg(cls, v: str | None) -> str | None:
         if isinstance(v, str) and v.startswith("postgresql://"):
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
         if isinstance(v, str) and v.startswith("postgresql+asyncpg://"):
