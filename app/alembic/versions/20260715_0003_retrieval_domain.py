@@ -36,6 +36,40 @@ def _provider_dataset_id(row: dict) -> str | None:
     return None
 
 
+def _legacy_binding_backfill_statement() -> sa.TextClause:
+    """Build the legacy-row backfill with explicit PostgreSQL bind types.
+
+    ``jsonb_build_object`` is polymorphic, so asyncpg cannot infer the type of
+    a bare ``:at`` bind.  Keep the casts in SQL instead of relying on driver
+    inference; the same statement is used by the migration and its dialect
+    compilation regression test.
+    """
+    return sa.text(
+        """
+        UPDATE knowledge_ingestion_job AS job
+           SET status = 'legacy_binding_missing',
+               last_error = 'legacy succeeded record has no provider binding; re-ingestion required',
+               status_history = COALESCE(status_history, '[]'::jsonb) ||
+                   jsonb_build_array(jsonb_build_object(
+                       'status', 'legacy_binding_missing',
+                       'at', CAST(:at AS text),
+                       'last_error', 'legacy succeeded record has no provider binding; re-ingestion required',
+                       'metadata', jsonb_build_object(
+                           'migration', '20260715_0003',
+                           'error_type', 'provider_binding_missing'
+                       )
+                   )),
+               updated_at = CAST(:now AS timestamptz)
+         WHERE job.status = 'succeeded'
+           AND NOT EXISTS (
+               SELECT 1
+                 FROM knowledge_document_version AS version
+                WHERE version.ingestion_id = job.id
+           )
+        """
+    )
+
+
 def upgrade() -> None:
     op.create_table(
         "knowledge_document",
@@ -212,30 +246,7 @@ def upgrade() -> None:
     # real provider binding. They must not retain production-success semantics
     # after the retrieval boundary becomes available.
     bind.execute(
-        sa.text(
-            """
-            UPDATE knowledge_ingestion_job AS job
-               SET status = 'legacy_binding_missing',
-                   last_error = 'legacy succeeded record has no provider binding; re-ingestion required',
-                   status_history = COALESCE(status_history, '[]'::jsonb) ||
-                       jsonb_build_array(jsonb_build_object(
-                           'status', 'legacy_binding_missing',
-                           'at', :at,
-                           'last_error', 'legacy succeeded record has no provider binding; re-ingestion required',
-                           'metadata', jsonb_build_object(
-                               'migration', '20260715_0003',
-                               'error_type', 'provider_binding_missing'
-                           )
-                       )),
-                   updated_at = :now
-             WHERE job.status = 'succeeded'
-               AND NOT EXISTS (
-                   SELECT 1
-                     FROM knowledge_document_version AS version
-                    WHERE version.ingestion_id = job.id
-               )
-            """
-        ),
+        _legacy_binding_backfill_statement(),
         {"at": now.isoformat(), "now": now},
     )
 
