@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from collections import defaultdict
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -135,9 +134,6 @@ def _assemble_response(
         (version.provider_dataset_id, version.provider_document_id): version
         for version in versions
     }
-    by_document: dict[str, list[KnowledgeDocumentVersion]] = defaultdict(list)
-    for version in versions:
-        by_document[version.provider_document_id].append(version)
 
     mapped: list[tuple[dict[str, Any], KnowledgeDocumentVersion]] = []
     for chunk in result.chunks:
@@ -146,10 +142,6 @@ def _assemble_response(
         if not provider_document_id:
             continue
         version = by_binding.get((provider_dataset_id, provider_document_id))
-        if version is None:
-            candidates = by_document.get(provider_document_id, [])
-            if len(candidates) == 1:
-                version = candidates[0]
         if version is not None:
             mapped.append((chunk, version))
 

@@ -133,7 +133,9 @@ def test_response_drops_unmapped_provider_chunks_and_hides_provider_ids() -> Non
             {
                 "id": "private-chunk-2",
                 "dataset_id": "other-dataset",
-                "document_id": "other-document",
+                # A globally unique document ID is not sufficient proof of
+                # dataset ownership.  The full provider binding must match.
+                "document_id": "ragflow-document-1",
                 "content": "must not leak",
                 "similarity": 1.0,
             },
