@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import Header
@@ -16,11 +16,26 @@ from core.config import Settings, get_settings
 
 
 class ServiceAuthVerifier:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        relation: Literal["ingest", "retrieve"] = "ingest",
+    ) -> None:
         self._settings = settings or get_settings()
+        self._relation = relation
+        if relation == "retrieve":
+            application = self._settings.retrieval_auth_casdoor_application
+            discovery_url = self._settings.retrieval_auth_discovery_url
+            backchannel_endpoint = self._settings.retrieval_auth_backchannel_endpoint
+            audience = self._settings.retrieval_auth_audience
+        else:
+            application = self._settings.internal_auth_casdoor_application
+            discovery_url = self._settings.internal_auth_discovery_url
+            backchannel_endpoint = self._settings.internal_auth_backchannel_endpoint
+            audience = self._settings.internal_auth_audience
         service_discovery_url = (
-            self._settings.internal_auth_discovery_url
-            or self._settings.casdoor_discovery_url
+            discovery_url or self._settings.casdoor_discovery_url
         )
         service_endpoint = self._settings.casdoor_endpoint
         if service_discovery_url:
@@ -32,12 +47,10 @@ class ServiceAuthVerifier:
         service_settings = self._settings.model_copy(
             update={
                 "casdoor_endpoint": service_endpoint,
-                "casdoor_application": self._settings.internal_auth_casdoor_application,
+                "casdoor_application": application,
                 "casdoor_discovery_url": service_discovery_url,
-                "casdoor_backchannel_endpoint": (
-                    self._settings.internal_auth_backchannel_endpoint
-                ),
-                "casdoor_client_id": self._settings.internal_auth_audience or "",
+                "casdoor_backchannel_endpoint": backchannel_endpoint,
+                "casdoor_client_id": audience or "",
                 "casdoor_client_secret": "",
                 "casdoor_redirect_uri": "",
             }
@@ -45,8 +58,14 @@ class ServiceAuthVerifier:
         self._oidc = OidcProviderClient(service_settings)
 
     async def verify(self, encoded: str) -> Principal:
-        expected_audience = self._settings.internal_auth_audience
-        allowed_subjects = self._settings.internal_auth_subjects
+        if self._relation == "retrieve":
+            expected_audience = self._settings.retrieval_auth_audience
+            allowed_subjects = self._settings.retrieval_auth_subjects
+            required_scope = self._settings.retrieval_auth_required_scope
+        else:
+            expected_audience = self._settings.internal_auth_audience
+            allowed_subjects = self._settings.internal_auth_subjects
+            required_scope = self._settings.internal_auth_required_scope
         if not expected_audience or not allowed_subjects:
             raise ServiceUnavailableError("internal service identity binding is not configured")
 
@@ -85,7 +104,7 @@ class ServiceAuthVerifier:
                     surface="internal",
                     audience=expected_audience,
                     roles=(),
-                    scopes=frozenset({self._settings.internal_auth_required_scope}),
+                    scopes=frozenset({required_scope}),
                     authenticated_at=datetime.fromtimestamp(int(claims["iat"]), tz=UTC),
                     expires_at=datetime.fromtimestamp(expires_at_epoch, tz=UTC),
                     policy_version=self._settings.auth_policy_version,
@@ -114,6 +133,7 @@ class ServiceAuthVerifier:
 
 
 _verifier: ServiceAuthVerifier | None = None
+_retrieval_verifier: ServiceAuthVerifier | None = None
 
 
 def get_service_auth_verifier() -> ServiceAuthVerifier:
@@ -123,9 +143,14 @@ def get_service_auth_verifier() -> ServiceAuthVerifier:
     return _verifier
 
 
-async def require_knowledge_ingest_service(
-    authorization: str | None = Header(default=None, alias="Authorization"),
-) -> Principal:
+def get_retrieval_service_auth_verifier() -> ServiceAuthVerifier:
+    global _retrieval_verifier
+    if _retrieval_verifier is None:
+        _retrieval_verifier = ServiceAuthVerifier(relation="retrieve")
+    return _retrieval_verifier
+
+
+def _bearer_token(authorization: str | None) -> str:
     if not authorization:
         raise UnauthorizedError("service bearer token required")
     try:
@@ -134,4 +159,16 @@ async def require_knowledge_ingest_service(
         raise UnauthorizedError("service bearer token required") from exc
     if scheme.lower() != "bearer" or not encoded.strip():
         raise UnauthorizedError("service bearer token required")
-    return await get_service_auth_verifier().verify(encoded.strip())
+    return encoded.strip()
+
+
+async def require_knowledge_ingest_service(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> Principal:
+    return await get_service_auth_verifier().verify(_bearer_token(authorization))
+
+
+async def require_knowledge_retrieve_service(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> Principal:
+    return await get_retrieval_service_auth_verifier().verify(_bearer_token(authorization))

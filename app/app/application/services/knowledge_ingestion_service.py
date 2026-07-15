@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import get_settings
@@ -15,7 +16,11 @@ from app.infrastructure.external.ragflow import (
     ingest_into_ragflow,
     resolve_artifact_content,
 )
-from app.infrastructure.models.knowledge import KnowledgeIngestionJob
+from app.infrastructure.models.knowledge import (
+    KnowledgeDocument,
+    KnowledgeDocumentVersion,
+    KnowledgeIngestionJob,
+)
 from app.domain.security import Principal
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
 
@@ -28,10 +33,13 @@ TERMINAL_STATUSES = {
     "artifact_unreadable",
     "external_api_error",
     "artifact_verified",
+    "legacy_binding_missing",
 }
 RETRY_BLOCKED_STATUSES = {"ragflow_config_error"}
 PROCESSOR_NAME = "artifact-contract-verifier"
 RAGFLOW_PROCESSOR_NAME = "ragflow-ingestion-worker"
+KNOWLEDGE_DOCUMENT_NAMESPACE = uuid.UUID("2d1540e8-d8b2-44b3-8da2-55f6c3027334")
+KNOWLEDGE_VERSION_NAMESPACE = uuid.UUID("9987a94c-9635-4124-b65e-738301c97831")
 
 
 def build_idempotency_key(payload: KnowledgeIngestionCreate) -> str:
@@ -191,6 +199,108 @@ async def update_ingestion_status(
     if status in TERMINAL_STATUSES:
         job.completed_at = datetime.now(UTC)
 
+    await session.commit()
+    await session.refresh(job)
+    return job
+
+
+def stable_knowledge_document_id(job: KnowledgeIngestionJob) -> uuid.UUID:
+    return uuid.uuid5(
+        KNOWLEDGE_DOCUMENT_NAMESPACE,
+        f"{job.source_app}:{job.source_document_id}:{job.target_dataset or 'default'}",
+    )
+
+
+def stable_knowledge_version_id(
+    knowledge_document_id: uuid.UUID,
+    source_document_version_id: uuid.UUID,
+) -> uuid.UUID:
+    return uuid.uuid5(
+        KNOWLEDGE_VERSION_NAMESPACE,
+        f"{knowledge_document_id}:{source_document_version_id}",
+    )
+
+
+async def complete_ragflow_ingestion(
+    session: AsyncSession,
+    *,
+    job: KnowledgeIngestionJob,
+    result: Any,
+) -> KnowledgeIngestionJob:
+    """Commit the domain identity, provider binding and terminal job atomically."""
+
+    settings = get_settings()
+    dataset_key = job.target_dataset or "default"
+    document_id = stable_knowledge_document_id(job)
+    version_id = stable_knowledge_version_id(document_id, job.source_document_version_id)
+    now = datetime.now(UTC)
+
+    await session.execute(
+        insert(KnowledgeDocument)
+        .values(
+            id=document_id,
+            source_app=job.source_app,
+            source_document_id=job.source_document_id,
+            dataset_key=dataset_key,
+            status="active",
+        )
+        .on_conflict_do_nothing(
+            index_elements=["source_app", "source_document_id", "dataset_key"]
+        )
+    )
+    await session.execute(
+        insert(KnowledgeDocumentVersion)
+        .values(
+            id=version_id,
+            knowledge_document_id=document_id,
+            source_app=job.source_app,
+            source_document_id=job.source_document_id,
+            source_document_version_id=job.source_document_version_id,
+            ingestion_id=job.id,
+            dataset_key=dataset_key,
+            content_hash=job.content_hash or "0" * 64,
+            title=job.title,
+            source_uri=job.canonical_url,
+            source_name=job.source_name,
+            access_scope=[f"tenant:{settings.retrieval_default_tenant_id}"],
+            status="indexed",
+            provider="ragflow",
+            provider_dataset_id=result.dataset_id,
+            provider_document_id=result.document_id,
+            indexed_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=["knowledge_document_id", "source_document_version_id"],
+            set_={
+                "ingestion_id": job.id,
+                "content_hash": job.content_hash or "0" * 64,
+                "title": job.title,
+                "source_uri": job.canonical_url,
+                "source_name": job.source_name,
+                "access_scope": [f"tenant:{settings.retrieval_default_tenant_id}"],
+                "status": "indexed",
+                "provider": "ragflow",
+                "provider_dataset_id": result.dataset_id,
+                "provider_document_id": result.document_id,
+                "indexed_at": now,
+                "updated_at": now,
+            },
+        )
+    )
+
+    history = list(job.status_history or [])
+    history.append(
+        _status_entry(
+            "succeeded",
+            metadata=build_ragflow_success_metadata(job, result.metadata),
+        )
+    )
+    job.status = "succeeded"
+    job.last_error = None
+    job.status_history = history
+    job.knowledge_document_id = str(document_id)
+    job.ragflow_document_id = result.document_id
+    job.completed_at = now
     await session.commit()
     await session.refresh(job)
     return job
@@ -356,15 +466,7 @@ async def process_ingestion_job(
                 knowledge_document_id=None,
                 ragflow_document_id=None,
             )
-        return await update_ingestion_status(
-            session,
-            ingestion_id=ingestion_id,
-            status="succeeded",
-            last_error=None,
-            metadata=build_ragflow_success_metadata(job, result.metadata),
-            knowledge_document_id=f"ragflow-dataset:{result.dataset_id}",
-            ragflow_document_id=result.document_id,
-        )
+        return await complete_ragflow_ingestion(session, job=job, result=result)
 
     try:
         artifact = await resolve_artifact_content(

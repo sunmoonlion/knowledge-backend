@@ -85,6 +85,11 @@ async def test_knowledge_routes_fail_closed_and_me_is_sanitized(monkeypatch) -> 
         assert "access_token" not in rendered
 
         assert (await client.post("/api/internal/tasks/ping")).status_code == 404
+        retrieval = await client.post(
+            "/api/internal/v1/knowledge/retrievals",
+            json={},
+        )
+        assert retrieval.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -120,6 +125,11 @@ def test_every_non_auth_api_route_has_admin_auth_dependency() -> None:
             for dependency in route.dependant.dependencies
         }
         if route.path.startswith("/api/internal/"):
-            assert "require_knowledge_ingest_service" in calls, route.path
+            expected = (
+                "require_knowledge_retrieve_service"
+                if route.path.endswith("/retrievals")
+                else "require_knowledge_ingest_service"
+            )
+            assert expected in calls, route.path
         else:
             assert "dependency" in calls, route.path

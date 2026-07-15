@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.services import knowledge_ingestion_service
+from app.application.services import knowledge_ingestion_service, knowledge_retrieval_service
 from app.infrastructure.messaging.celery_producer import get_celery_producer
 from app.infrastructure.storage.postgres import get_db_session
 from app.domain.security import Principal
@@ -17,7 +17,14 @@ from app.interfaces.schemas.knowledge import (
     KnowledgeIngestionStatusUpdate,
     RAGFlowConfigCheckRead,
 )
-from app.infrastructure.security.service_auth import require_knowledge_ingest_service
+from app.interfaces.schemas.retrieval import (
+    KnowledgeRetrievalRequest,
+    KnowledgeRetrievalResponse,
+)
+from app.infrastructure.security.service_auth import (
+    require_knowledge_ingest_service,
+    require_knowledge_retrieve_service,
+)
 
 router = APIRouter(prefix="/knowledge", tags=["知识入库"])
 internal_router = APIRouter(
@@ -61,6 +68,23 @@ async def submit_internal_ingestion(
     if job.status == "accepted" and producer.enabled:
         producer.dispatch_knowledge_ingestion(job.id)
     return job
+
+
+@internal_router.post(
+    "/retrievals",
+    response_model=KnowledgeRetrievalResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def retrieve_internal_knowledge(
+    payload: KnowledgeRetrievalRequest,
+    service_principal: Principal = Depends(require_knowledge_retrieve_service),
+    session: AsyncSession = Depends(get_db_session),
+):
+    return await knowledge_retrieval_service.retrieve_knowledge(
+        session,
+        payload,
+        service_principal=service_principal,
+    )
 
 
 @router.get("/ingestions", response_model=list[KnowledgeIngestionRead])

@@ -24,6 +24,17 @@ def _settings() -> Settings:
     )
 
 
+def _retrieval_settings() -> Settings:
+    return _settings().model_copy(
+        update={
+            "retrieval_auth_casdoor_application": "sunmoonai-research-knowledge-retrieve",
+            "retrieval_auth_audience": "retrieval-client",
+            "retrieval_auth_subject_allowlist": "research-worker",
+            "retrieval_auth_required_scope": "knowledge:retrieve",
+        }
+    )
+
+
 def test_service_verifier_uses_explicit_service_discovery_url() -> None:
     settings = _settings().model_copy(
         update={
@@ -138,3 +149,32 @@ async def test_service_token_negative_matrix(overrides: dict, error: type[Except
 
     with pytest.raises(error):
         await verifier.verify(_token(key, **overrides))
+
+
+@pytest.mark.asyncio
+async def test_retrieval_relation_is_independent_from_ingestion_relation() -> None:
+    key = RSAKey.generate_key(parameters={"kid": "test-key"})
+    verifier = ServiceAuthVerifier(_retrieval_settings(), relation="retrieve")
+    verifier._oidc = FakeOidc(KeySet.import_key_set({"keys": [key.as_dict(private=False)]}))
+    retrieval_token = _token(
+        key,
+        sub="research-worker",
+        aud="retrieval-client",
+        scope="openid",
+    )
+
+    principal = await verifier.verify(retrieval_token)
+
+    assert principal.subject == "research-worker"
+    assert principal.audience == "retrieval-client"
+    assert principal.scopes == frozenset({"knowledge:retrieve"})
+
+
+@pytest.mark.asyncio
+async def test_ingestion_credential_cannot_call_retrieval_relation() -> None:
+    key = RSAKey.generate_key(parameters={"kid": "test-key"})
+    verifier = ServiceAuthVerifier(_retrieval_settings(), relation="retrieve")
+    verifier._oidc = FakeOidc(KeySet.import_key_set({"keys": [key.as_dict(private=False)]}))
+
+    with pytest.raises(UnauthorizedError, match="audience"):
+        await verifier.verify(_token(key))

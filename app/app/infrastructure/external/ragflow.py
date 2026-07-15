@@ -19,6 +19,14 @@ class RAGFlowError(RuntimeError):
     pass
 
 
+class RAGFlowTimeoutError(RAGFlowError):
+    pass
+
+
+class RAGFlowProtocolError(RAGFlowError):
+    pass
+
+
 @dataclass(frozen=True)
 class ArtifactContent:
     filename: str
@@ -47,8 +55,20 @@ class RAGFlowConfigCheck:
     details: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class RAGFlowRetrievalResult:
+    chunks: list[dict[str, Any]]
+    total: int
+
+
 class RAGFlowClient:
-    def __init__(self, settings: Settings, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        client: httpx.AsyncClient | None = None,
+        *,
+        timeout_seconds: float = 30,
+    ) -> None:
         if not settings.ragflow_api_base or not settings.ragflow_api_key:
             raise RAGFlowError("RAGFlow is not configured")
         base = settings.ragflow_api_base.rstrip("/")
@@ -56,7 +76,7 @@ class RAGFlowClient:
             base = f"{base}/api/v1"
         self._base = base
         self._api_key = settings.ragflow_api_key
-        self._client = client or httpx.AsyncClient(timeout=30)
+        self._client = client or httpx.AsyncClient(timeout=timeout_seconds)
         self._owns_client = client is None
 
     async def close(self) -> None:
@@ -72,9 +92,16 @@ class RAGFlowClient:
                 method, f"{self._base}{path}", headers=self._headers(), **kwargs
             )
             response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise RAGFlowTimeoutError("RAGFlow request timed out") from exc
         except httpx.HTTPError as exc:
             raise RAGFlowError(f"RAGFlow HTTP request failed: {exc}") from exc
-        data = response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RAGFlowProtocolError("RAGFlow response is not valid JSON") from exc
+        if not isinstance(data, dict):
+            raise RAGFlowProtocolError("RAGFlow response is not an object")
         if data.get("code") != 0:
             raise RAGFlowError(str(data.get("message") or data))
         return data
@@ -131,6 +158,41 @@ class RAGFlowClient:
             if doc.get("id") == document_id:
                 return doc
         raise RAGFlowError(f"RAGFlow document not found: {document_id}")
+
+    async def retrieve(
+        self,
+        *,
+        question: str,
+        dataset_ids: list[str],
+        document_ids: list[str],
+        top_k: int,
+    ) -> RAGFlowRetrievalResult:
+        data = await self._request(
+            "POST",
+            "/retrieval",
+            json={
+                "question": question,
+                "dataset_ids": dataset_ids,
+                "document_ids": document_ids,
+                "page": 1,
+                "page_size": top_k,
+                "top_k": max(top_k, 32),
+                "similarity_threshold": 0.0,
+                "vector_similarity_weight": 0.3,
+                "keyword": False,
+                "highlight": False,
+            },
+        )
+        result = data.get("data")
+        if not isinstance(result, dict):
+            raise RAGFlowProtocolError("RAGFlow retrieval data is not an object")
+        chunks = result.get("chunks") or []
+        if not isinstance(chunks, list) or not all(isinstance(item, dict) for item in chunks):
+            raise RAGFlowProtocolError("RAGFlow retrieval chunks are invalid")
+        total = result.get("total", len(chunks))
+        if not isinstance(total, int) or total < 0:
+            raise RAGFlowProtocolError("RAGFlow retrieval total is invalid")
+        return RAGFlowRetrievalResult(chunks=chunks, total=total)
 
 
 async def ingest_into_ragflow(

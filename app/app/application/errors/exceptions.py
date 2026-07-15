@@ -43,3 +43,13 @@ class ServerError(AppException):
 class ServiceUnavailableError(AppException):
     def __init__(self, msg: str = "服务暂时不可用"):
         super().__init__(status_code=503, code=503, msg=msg)
+
+
+class BadGatewayError(AppException):
+    def __init__(self, msg: str = "上游服务响应无效"):
+        super().__init__(status_code=502, code=502, msg=msg)
+
+
+class GatewayTimeoutError(AppException):
+    def __init__(self, msg: str = "上游服务请求超时"):
+        super().__init__(status_code=504, code=504, msg=msg)

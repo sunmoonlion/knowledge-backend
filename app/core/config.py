@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     internal_auth_subject_allowlist: str = ""
     internal_auth_required_scope: str = "knowledge:ingest"
 
+    # Independent Research worker -> Knowledge retrieval resource boundary.
+    retrieval_auth_casdoor_application: str = "sunmoonai-research-knowledge-retrieve"
+    retrieval_auth_discovery_url: str | None = None
+    retrieval_auth_backchannel_endpoint: str | None = None
+    retrieval_auth_audience: str | None = None
+    retrieval_auth_subject_allowlist: str = ""
+    retrieval_auth_required_scope: str = "knowledge:retrieve"
+
     # Frontend
     # Used for post-login redirects from backend callback.
     frontend_base_url: str = "http://localhost:5173"
@@ -137,6 +145,14 @@ class Settings(BaseSettings):
             if item.strip()
         )
 
+    @property
+    def retrieval_auth_subjects(self) -> frozenset[str]:
+        return frozenset(
+            item.strip()
+            for item in self.retrieval_auth_subject_allowlist.split(",")
+            if item.strip()
+        )
+
     # Celery（应用层只读 CELERY_BROKER_URL；k8s 按 Deployment 注入 producer/worker 账号）
     celery_broker_url: str | None = Field(
         default=None, validation_alias="CELERY_BROKER_URL"
@@ -157,6 +173,20 @@ class Settings(BaseSettings):
     )
     ragflow_parse_poll_interval_seconds: float = Field(
         default=1.0, validation_alias="RAGFLOW_PARSE_POLL_INTERVAL_SECONDS"
+    )
+    retrieval_dataset_allowlist: str = Field(
+        default="default",
+        validation_alias="RETRIEVAL_DATASET_ALLOWLIST",
+    )
+    retrieval_default_tenant_id: str = Field(
+        default="sunmoonai",
+        validation_alias="RETRIEVAL_DEFAULT_TENANT_ID",
+    )
+    retrieval_provider_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        le=120,
+        validation_alias="RETRIEVAL_PROVIDER_TIMEOUT_SECONDS",
     )
 
     # S3 object storage（用于 ingestion worker 拉取上游 artifact）
@@ -191,6 +221,14 @@ class Settings(BaseSettings):
     @property
     def ragflow_enabled(self) -> bool:
         return bool(self.ragflow_api_base and self.ragflow_api_key)
+
+    @property
+    def retrieval_datasets(self) -> frozenset[str]:
+        return frozenset(
+            value.strip()
+            for value in self.retrieval_dataset_allowlist.split(",")
+            if value.strip()
+        )
 
     @property
     def artifact_bucket_allowlist(self) -> frozenset[str]:
