@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import Annotated
 
 from fastapi import APIRouter, Cookie, Depends, Query, Response
 from fastapi.responses import RedirectResponse
@@ -50,7 +49,6 @@ async def login(return_to: str | None = Query(default=None)) -> RedirectResponse
         value=start.transaction_id,
         max_age=get_settings().auth_transaction_ttl_seconds,
     )
-    redirect.headers["Cache-Control"] = "no-store"
     return redirect
 
 
@@ -73,7 +71,6 @@ async def callback(
             status_code=302,
         )
         redirect.delete_cookie(TRANSACTION_COOKIE, path="/")
-        redirect.headers["Cache-Control"] = "no-store"
         return redirect
     redirect = RedirectResponse(url=_frontend_redirect(return_to), status_code=302)
     max_age = max(
@@ -82,25 +79,21 @@ async def callback(
     )
     _set_cookie(redirect, key=SESSION_COOKIE, value=session.session_id, max_age=max_age)
     redirect.delete_cookie(TRANSACTION_COOKIE, path="/")
-    redirect.headers["Cache-Control"] = "no-store"
     return redirect
 
 
 @router.post("/logout", status_code=204, summary="退出登录")
 async def logout(
     response: Response,
-    _: Annotated[BrowserSession, Depends(get_current_browser_session)],
     session_id: str | None = Cookie(default=None, alias=SESSION_COOKIE),
+    _: BrowserSession = Depends(get_current_browser_session),
 ) -> None:
     await _auth_service.delete_session(session_id)
     response.delete_cookie(SESSION_COOKIE, path="/")
-    response.headers["Cache-Control"] = "no-store"
 
 
 @router.get("/me", summary="获取当前用户")
-async def me(
-    session: Annotated[BrowserSession, Depends(get_current_browser_session)],
-) -> dict[str, object]:
+async def me(session: BrowserSession = Depends(get_current_browser_session)) -> dict:
     principal = session.principal
     return {
         "contract_version": 1,
@@ -117,3 +110,4 @@ async def me(
         },
         "csrf_token": session.csrf_token,
     }
+
