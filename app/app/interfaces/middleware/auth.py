@@ -5,7 +5,11 @@ from collections.abc import Awaitable, Callable
 from fastapi import Cookie, Depends, Header, Request
 
 from app.application.errors.exceptions import UnauthorizedError
-from app.application.services.auth_service import ADMIN_SCOPE, SESSION_COOKIE, AuthService
+from app.application.services.auth_service import (
+    ADMIN_SCOPE,
+    SESSION_COOKIE,
+    AuthService,
+)
 from app.domain.security import BrowserSession, Principal
 
 _auth_service = AuthService()

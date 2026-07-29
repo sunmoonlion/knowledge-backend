@@ -127,7 +127,7 @@ class Citation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     @classmethod
-    def from_evidence(cls, evidence: Evidence) -> "Citation":
+    def from_evidence(cls, evidence: Evidence) -> Citation:
         return cls(
             evidence_id=evidence.evidence_id,
             knowledge_document_id=evidence.knowledge_document_id,

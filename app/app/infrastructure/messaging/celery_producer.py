@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 import uuid
+from functools import lru_cache
 
 from celery.result import AsyncResult
 
@@ -31,14 +31,6 @@ class CeleryProducer:
             return True
         return configure_celery()
 
-    def _delivery_options(self) -> dict[str, str]:
-        queue = get_settings().celery_queue
-        return {
-            "queue": queue,
-            "exchange": queue,
-            "routing_key": queue,
-        }
-
     def dispatch_ping(self) -> str:
         """投递 ping 任务，返回 Celery task_id。"""
         self._ensure_ready()
@@ -48,6 +40,14 @@ class CeleryProducer:
         async_result = ping.apply_async(**options)
         logger.info("已投递 ping 任务 task_id=%s queue=%s", async_result.id, options["queue"])
         return async_result.id
+
+    def _delivery_options(self) -> dict[str, str]:
+        queue = get_settings().celery_queue
+        return {
+            "queue": queue,
+            "exchange": queue,
+            "routing_key": queue,
+        }
 
     def dispatch_knowledge_ingestion(self, ingestion_id: uuid.UUID) -> str:
         """投递 knowledge ingestion 处理任务，返回 Celery task_id。"""

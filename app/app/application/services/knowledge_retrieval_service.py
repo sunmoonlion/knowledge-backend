@@ -22,7 +22,10 @@ from app.infrastructure.external.ragflow import (
     RAGFlowRetrievalResult,
     RAGFlowTimeoutError,
 )
-from app.infrastructure.models.knowledge import KnowledgeDocument, KnowledgeDocumentVersion
+from app.infrastructure.models.knowledge import (
+    KnowledgeDocument,
+    KnowledgeDocumentVersion,
+)
 from app.interfaces.schemas.retrieval import (
     Evidence,
     KnowledgeRetrievalRequest,
@@ -30,7 +33,6 @@ from app.interfaces.schemas.retrieval import (
     ProviderMetadata,
 )
 from core.config import get_settings
-
 
 CHUNK_NAMESPACE = uuid.UUID("66b3a2ca-6880-4233-af81-9b8905672125")
 EVIDENCE_NAMESPACE = uuid.UUID("7d9de8d6-cace-42e4-9477-405dce64594c")

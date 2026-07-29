@@ -27,7 +27,6 @@ from app.interfaces.schemas.retrieval import (
 )
 from core.config import Settings
 
-
 CONTRACT_DIR = Path(__file__).resolve().parents[3] / "contracts/retrieval/v1"
 MANIFEST_PATH = CONTRACT_DIR / "contract-manifest.json"
 

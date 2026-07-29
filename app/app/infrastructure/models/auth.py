@@ -8,7 +8,7 @@ from app.infrastructure.models.base import Base, TimestampMixin, UUIDMixin
 
 
 class AuthUser(UUIDMixin, TimestampMixin, Base):
-    """Local identity binding; provider subject remains the external identity."""
+    """Local authorization binding keyed by the Provider issuer and subject."""
 
     __tablename__ = "auth_user"
 
