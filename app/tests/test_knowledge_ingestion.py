@@ -26,15 +26,14 @@ from app.infrastructure.external.ragflow import (
     RAGFlowClient,
     RAGFlowConfigCheck,
     RAGFlowError,
-    check_ragflow_config,
     _s3_sigv4_headers,
+    check_ragflow_config,
     ingest_into_ragflow,
     resolve_artifact_content,
 )
 from app.infrastructure.messaging.celery_producer import CeleryProducer
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
 from core.config import Settings
-
 
 CONTRACT_PATH = (
     Path(__file__).resolve().parents[3]

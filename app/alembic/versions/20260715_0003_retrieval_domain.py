@@ -10,9 +10,10 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 revision = "20260715_0003"
 down_revision = "20260712_0002"

@@ -3,6 +3,8 @@ from fastapi import APIRouter, Depends
 from app.interfaces.endpoints.auth_routes import router as auth_router
 from app.interfaces.endpoints.knowledge_routes import (
     internal_router as knowledge_internal_router,
+)
+from app.interfaces.endpoints.knowledge_routes import (
     router as knowledge_router,
 )
 from app.interfaces.endpoints.tasks_routes import router as tasks_router

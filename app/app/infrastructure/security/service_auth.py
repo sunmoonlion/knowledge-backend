@@ -9,7 +9,11 @@ from joserfc import jwt
 from joserfc.errors import JoseError
 from joserfc.jwt import JWTClaimsRegistry
 
-from app.application.errors.exceptions import ForbiddenError, ServiceUnavailableError, UnauthorizedError
+from app.application.errors.exceptions import (
+    ForbiddenError,
+    ServiceUnavailableError,
+    UnauthorizedError,
+)
 from app.domain.security import Principal
 from app.infrastructure.security import OidcProviderClient
 from core.config import Settings, get_settings

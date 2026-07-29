@@ -6,10 +6,17 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.services import knowledge_ingestion_service, knowledge_retrieval_service
-from app.infrastructure.messaging.celery_producer import get_celery_producer
-from app.infrastructure.storage.postgres import get_db_session
+from app.application.services import (
+    knowledge_ingestion_service,
+    knowledge_retrieval_service,
+)
 from app.domain.security import Principal
+from app.infrastructure.messaging.celery_producer import get_celery_producer
+from app.infrastructure.security.service_auth import (
+    require_knowledge_ingest_service,
+    require_knowledge_retrieve_service,
+)
+from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.schemas.knowledge import (
     KnowledgeIngestionCreate,
     KnowledgeIngestionRead,
@@ -20,10 +27,6 @@ from app.interfaces.schemas.knowledge import (
 from app.interfaces.schemas.retrieval import (
     KnowledgeRetrievalRequest,
     KnowledgeRetrievalResponse,
-)
-from app.infrastructure.security.service_auth import (
-    require_knowledge_ingest_service,
-    require_knowledge_retrieve_service,
 )
 
 router = APIRouter(prefix="/knowledge", tags=["知识入库"])

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 import uuid
+from functools import lru_cache
 
 from celery.result import AsyncResult
 

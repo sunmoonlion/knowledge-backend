@@ -8,8 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.config import get_settings
-
+from app.domain.security import Principal
 from app.infrastructure.external.ragflow import (
     RAGFlowError,
     check_ragflow_config,
@@ -21,9 +20,8 @@ from app.infrastructure.models.knowledge import (
     KnowledgeDocumentVersion,
     KnowledgeIngestionJob,
 )
-from app.domain.security import Principal
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
-
+from core.config import get_settings
 
 TERMINAL_STATUSES = {
     "succeeded",
