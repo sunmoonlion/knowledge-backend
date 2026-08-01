@@ -18,6 +18,12 @@
     "deletionPolicy": "Retain",
     "buckets": [
       {
+        "name": "development-info-originals",
+        "permissions": ["read"],
+        "versioning": true,
+        "objectLock": false
+      },
+      {
         "name": "development-knowledge-admin-assets",
         "permissions": ["read", "write", "delete", "list"],
         "versioning": true,

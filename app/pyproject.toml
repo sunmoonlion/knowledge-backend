@@ -14,6 +14,7 @@ dependencies = [
     "celery>=5.5.0",
     "sqlalchemy>=2.0.0",
     "uvicorn[standard]>=0.35.0",
+    "joserfc>=1.7.3,<2.0.0",
 ]
 
 [dependency-groups]
@@ -22,10 +23,17 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "httpx>=0.28.0",
     "pyright>=1.1.400",
+    "jsonschema>=4.26.0",
+    "ruff>=0.16.0",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = ["."]
+
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [tool.pyright]
 pythonVersion = "3.12"
@@ -38,3 +46,16 @@ reportOptionalMemberAccess = true
 reportAttributeAccessIssue = true
 include = ["app", "core", "app/tasks"]
 exclude = ["alembic"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+# Existing Knowledge domain routes still use FastAPI dependency factories in
+# defaults. Converting those signatures is a separate domain API migration.
+ignore = ["E501", "B008", "UP046"]
+
+[tool.ruff.lint.per-file-ignores]
+"app/interfaces/endpoints/**" = ["B008"]

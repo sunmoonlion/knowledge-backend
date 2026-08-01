@@ -7,7 +7,7 @@ class AppException(RuntimeError):
         self.status_code = status_code
         self.msg = msg
         self.data = data
-        super().__init__()
+        super().__init__(msg)
 
 
 class BadRequestError(AppException):
@@ -38,3 +38,18 @@ class ValidationError(AppException):
 class ServerError(AppException):
     def __init__(self, msg: str = "服务器内部错误"):
         super().__init__(status_code=500, code=500, msg=msg)
+
+
+class ServiceUnavailableError(AppException):
+    def __init__(self, msg: str = "服务暂时不可用"):
+        super().__init__(status_code=503, code=503, msg=msg)
+
+
+class BadGatewayError(AppException):
+    def __init__(self, msg: str = "上游服务响应无效"):
+        super().__init__(status_code=502, code=502, msg=msg)
+
+
+class GatewayTimeoutError(AppException):
+    def __init__(self, msg: str = "上游服务请求超时"):
+        super().__init__(status_code=504, code=504, msg=msg)
