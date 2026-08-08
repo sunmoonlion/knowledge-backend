@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.dto.knowledge import KnowledgeIngestionCreate
 from app.domain.security import Principal
 from app.infrastructure.external.ragflow import (
     RAGFlowError,
@@ -20,7 +21,6 @@ from app.infrastructure.models.knowledge import (
     KnowledgeDocumentVersion,
     KnowledgeIngestionJob,
 )
-from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
 from core.config import get_settings
 
 TERMINAL_STATUSES = {
@@ -45,7 +45,10 @@ def build_idempotency_key(payload: KnowledgeIngestionCreate) -> str:
 
 
 def _status_entry(
-    status: str, *, last_error: str | None = None, metadata: dict[str, Any] | None = None
+    status: str,
+    *,
+    last_error: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "status": status,
@@ -58,7 +61,9 @@ def _status_entry(
     return entry
 
 
-def _payload_dict(payload: KnowledgeIngestionCreate, idempotency_key: str) -> dict[str, Any]:
+def _payload_dict(
+    payload: KnowledgeIngestionCreate, idempotency_key: str
+) -> dict[str, Any]:
     result = payload.model_dump(mode="json", exclude_none=True)
     result["idempotency_key"] = idempotency_key
     return result
@@ -149,24 +154,33 @@ async def list_ingestion_jobs(
     if source_app:
         query = query.where(KnowledgeIngestionJob.source_app == source_app)
     if source_document_id:
-        query = query.where(KnowledgeIngestionJob.source_document_id == source_document_id)
+        query = query.where(
+            KnowledgeIngestionJob.source_document_id == source_document_id
+        )
     if source_document_version_id:
         query = query.where(
-            KnowledgeIngestionJob.source_document_version_id == source_document_version_id
+            KnowledgeIngestionJob.source_document_version_id
+            == source_document_version_id
         )
     if target_dataset:
         query = query.where(KnowledgeIngestionJob.target_dataset == target_dataset)
     if status:
         query = query.where(KnowledgeIngestionJob.status == status)
     if ragflow_document_id:
-        query = query.where(KnowledgeIngestionJob.ragflow_document_id == ragflow_document_id)
+        query = query.where(
+            KnowledgeIngestionJob.ragflow_document_id == ragflow_document_id
+        )
     if idempotency_key:
         query = query.where(KnowledgeIngestionJob.idempotency_key == idempotency_key)
     if created_from:
         query = query.where(KnowledgeIngestionJob.created_at >= created_from)
     if created_to:
         query = query.where(KnowledgeIngestionJob.created_at <= created_to)
-    query = query.order_by(KnowledgeIngestionJob.created_at.desc()).limit(limit).offset(offset)
+    query = (
+        query.order_by(KnowledgeIngestionJob.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
     result = await session.execute(query)
     return list(result.scalars().all())
 
@@ -230,7 +244,9 @@ async def complete_ragflow_ingestion(
     settings = get_settings()
     dataset_key = job.target_dataset or "default"
     document_id = stable_knowledge_document_id(job)
-    version_id = stable_knowledge_version_id(document_id, job.source_document_version_id)
+    version_id = stable_knowledge_version_id(
+        document_id, job.source_document_version_id
+    )
     now = datetime.now(UTC)
 
     await session.execute(
@@ -326,14 +342,21 @@ def classify_ingestion_error(exc: BaseException) -> tuple[str, dict[str, Any]]:
     if "parse timed out" in message_lower or "parse failed" in message_lower:
         return "ragflow_parse_failed", {"error_type": "ragflow_parse_failed"}
     if isinstance(exc, RAGFlowError):
-        return "external_api_error", {"error_type": "external_api_error", "system": "ragflow"}
+        return "external_api_error", {
+            "error_type": "external_api_error",
+            "system": "ragflow",
+        }
     if isinstance(exc, OSError):
         return "external_api_error", {"error_type": "external_api_error"}
     return "failed", {"error_type": "unknown"}
 
 
 async def retry_ingestion_job(
-    session: AsyncSession, *, ingestion_id: uuid.UUID, force: bool = False, reason: str | None = None
+    session: AsyncSession,
+    *,
+    ingestion_id: uuid.UUID,
+    force: bool = False,
+    reason: str | None = None,
 ) -> KnowledgeIngestionJob:
     job = await get_ingestion_job(session, ingestion_id)
     if job is None:
@@ -343,7 +366,9 @@ async def retry_ingestion_job(
     if job.status == "succeeded":
         raise ValueError("succeeded ingestion job cannot be retried")
     if job.status in RETRY_BLOCKED_STATUSES and not force:
-        raise ValueError(f"retry blocked for {job.status}; fix configuration first or force retry")
+        raise ValueError(
+            f"retry blocked for {job.status}; fix configuration first or force retry"
+        )
 
     metadata_json = dict(job.metadata_json or {})
     retry_history = list(metadata_json.get("retry_history") or [])
@@ -427,7 +452,9 @@ async def process_ingestion_job(
         return job
 
     settings = get_settings()
-    processor_name = RAGFLOW_PROCESSOR_NAME if settings.ragflow_enabled else PROCESSOR_NAME
+    processor_name = (
+        RAGFLOW_PROCESSOR_NAME if settings.ragflow_enabled else PROCESSOR_NAME
+    )
     job = await update_ingestion_status(
         session,
         ingestion_id=ingestion_id,

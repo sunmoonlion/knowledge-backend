@@ -27,7 +27,9 @@ def _settings() -> Settings:
 def _retrieval_settings() -> Settings:
     return _settings().model_copy(
         update={
-            "retrieval_auth_casdoor_application": "sunmoonai-research-knowledge-retrieve",
+            "retrieval_auth_casdoor_application": (
+                "sunmoonai-research-knowledge-retrieve"
+            ),
             "retrieval_auth_audience": "retrieval-client",
             "retrieval_auth_subject_allowlist": "research-worker",
             "retrieval_auth_required_scope": "knowledge:retrieve",
@@ -82,20 +84,19 @@ def test_internal_discovery_does_not_inherit_browser_backchannel() -> None:
     assert verifier._oidc._settings.casdoor_backchannel_endpoint is None
 
 
-class FakeOidc:
-    def __init__(self, key_set) -> None:
-        self.key_set = key_set
-
-    async def get_metadata(self):
-        return OidcMetadata(
-            issuer="https://identity.example.test",
-            authorization_endpoint="https://identity.example.test/authorize",
-            token_endpoint="https://identity.example.test/token",
-            jwks_uri="https://identity.example.test/jwks",
-        )
-
-    async def get_key_set(self, metadata, *, force_refresh: bool = False):
-        return self.key_set
+def _bind_test_key(verifier: ServiceAuthVerifier, key: RSAKey) -> None:
+    now = time.monotonic()
+    verifier._oidc._metadata = OidcMetadata(
+        issuer="https://identity.example.test",
+        authorization_endpoint="https://identity.example.test/authorize",
+        token_endpoint="https://identity.example.test/token",
+        jwks_uri="https://identity.example.test/jwks",
+    )
+    verifier._oidc._metadata_loaded_at = now
+    verifier._oidc._key_set = KeySet.import_key_set(
+        {"keys": [key.as_dict(private=False)]}
+    )
+    verifier._oidc._keys_loaded_at = now
 
 
 def _token(key: RSAKey, **overrides) -> str:
@@ -121,7 +122,7 @@ def _token(key: RSAKey, **overrides) -> str:
 async def test_service_token_is_verified_and_bound_to_relation() -> None:
     key = RSAKey.generate_key(parameters={"kid": "test-key"})
     verifier = ServiceAuthVerifier(_settings())
-    verifier._oidc = FakeOidc(KeySet.import_key_set({"keys": [key.as_dict(private=False)]}))
+    _bind_test_key(verifier, key)
 
     principal = await verifier.verify(_token(key))
 
@@ -142,10 +143,12 @@ async def test_service_token_is_verified_and_bound_to_relation() -> None:
         ({"exp": int(time.time()) - 60}, UnauthorizedError),
     ],
 )
-async def test_service_token_negative_matrix(overrides: dict, error: type[Exception]) -> None:
+async def test_service_token_negative_matrix(
+    overrides: dict, error: type[Exception]
+) -> None:
     key = RSAKey.generate_key(parameters={"kid": "test-key"})
     verifier = ServiceAuthVerifier(_settings())
-    verifier._oidc = FakeOidc(KeySet.import_key_set({"keys": [key.as_dict(private=False)]}))
+    _bind_test_key(verifier, key)
 
     with pytest.raises(error):
         await verifier.verify(_token(key, **overrides))
@@ -155,7 +158,7 @@ async def test_service_token_negative_matrix(overrides: dict, error: type[Except
 async def test_retrieval_relation_is_independent_from_ingestion_relation() -> None:
     key = RSAKey.generate_key(parameters={"kid": "test-key"})
     verifier = ServiceAuthVerifier(_retrieval_settings(), relation="retrieve")
-    verifier._oidc = FakeOidc(KeySet.import_key_set({"keys": [key.as_dict(private=False)]}))
+    _bind_test_key(verifier, key)
     retrieval_token = _token(
         key,
         sub="research-worker",
@@ -174,7 +177,7 @@ async def test_retrieval_relation_is_independent_from_ingestion_relation() -> No
 async def test_ingestion_credential_cannot_call_retrieval_relation() -> None:
     key = RSAKey.generate_key(parameters={"kid": "test-key"})
     verifier = ServiceAuthVerifier(_retrieval_settings(), relation="retrieve")
-    verifier._oidc = FakeOidc(KeySet.import_key_set({"keys": [key.as_dict(private=False)]}))
+    _bind_test_key(verifier, key)
 
     with pytest.raises(UnauthorizedError, match="audience"):
         await verifier.verify(_token(key))

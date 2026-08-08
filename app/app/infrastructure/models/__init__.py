@@ -5,11 +5,14 @@ from app.infrastructure.models.knowledge import (
     KnowledgeDocumentVersion,
     KnowledgeIngestionJob,
 )
+from app.infrastructure.models.outbox import InboxMessage, OutboxMessage
 
 __all__ = [
-    "Base",
     "AuthUser",
+    "Base",
+    "InboxMessage",
     "KnowledgeDocument",
     "KnowledgeDocumentVersion",
     "KnowledgeIngestionJob",
+    "OutboxMessage",
 ]

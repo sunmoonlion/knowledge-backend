@@ -1,4 +1,4 @@
-"""Celery producer — admin-backend API 向 RabbitMQ 投递异步任务。"""
+"""Celery producer — Backend API 向 RabbitMQ 投递异步任务。"""
 
 from __future__ import annotations
 
@@ -38,19 +38,20 @@ class CeleryProducer:
 
         options = self._delivery_options()
         async_result = ping.apply_async(**options)
-        logger.info("已投递 ping 任务 task_id=%s queue=%s", async_result.id, options["queue"])
+        logger.info(
+            "已投递 ping 任务 task_id=%s queue=%s",
+            async_result.id,
+            options["queue"],
+        )
         return async_result.id
 
-    def _delivery_options(self) -> dict[str, str]:
+    @staticmethod
+    def _delivery_options() -> dict[str, str]:
         queue = get_settings().celery_queue
-        return {
-            "queue": queue,
-            "exchange": queue,
-            "routing_key": queue,
-        }
+        return {"queue": queue, "exchange": queue, "routing_key": queue}
 
     def dispatch_knowledge_ingestion(self, ingestion_id: uuid.UUID) -> str:
-        """投递 knowledge ingestion 处理任务，返回 Celery task_id。"""
+        """投递 Knowledge ingestion 任务，返回 Celery task_id。"""
         self._ensure_ready()
         from app.tasks.knowledge_ingestion import process_knowledge_ingestion
 
@@ -58,7 +59,7 @@ class CeleryProducer:
             args=[str(ingestion_id)], **self._delivery_options()
         )
         logger.info(
-            "已投递 process_knowledge_ingestion 任务 task_id=%s ingestion_id=%s queue=%s",
+            "已投递 process_knowledge_ingestion task_id=%s ingestion_id=%s queue=%s",
             async_result.id,
             ingestion_id,
             get_settings().celery_queue,

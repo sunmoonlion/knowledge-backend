@@ -10,6 +10,4 @@ def test_migration_database_url_is_independent_and_uses_asyncpg() -> None:
 
     assert settings.database_url.startswith("postgresql+asyncpg://runtime:")
     assert settings.migration_database_url is not None
-    assert settings.migration_database_url.startswith(
-        "postgresql+asyncpg://migrator:"
-    )
+    assert settings.migration_database_url.startswith("postgresql+asyncpg://migrator:")

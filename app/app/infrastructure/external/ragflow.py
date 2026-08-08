@@ -130,7 +130,9 @@ class RAGFlowClient:
             raise RAGFlowError("RAGFlow tenant model response is not an object")
         return tenant
 
-    async def upload_document(self, dataset_id: str, artifact: ArtifactContent) -> dict[str, Any]:
+    async def upload_document(
+        self, dataset_id: str, artifact: ArtifactContent
+    ) -> dict[str, Any]:
         files = {
             "file": (
                 artifact.filename,
@@ -138,7 +140,9 @@ class RAGFlowClient:
                 artifact.content_type or "text/plain",
             )
         }
-        data = await self._request("POST", f"/datasets/{dataset_id}/documents", files=files)
+        data = await self._request(
+            "POST", f"/datasets/{dataset_id}/documents", files=files
+        )
         documents = data.get("data") or []
         if not documents:
             raise RAGFlowError("RAGFlow upload returned no document")
@@ -146,7 +150,9 @@ class RAGFlowClient:
 
     async def parse_document(self, dataset_id: str, document_id: str) -> None:
         await self._request(
-            "POST", f"/datasets/{dataset_id}/documents/parse", json={"document_ids": [document_id]}
+            "POST",
+            f"/datasets/{dataset_id}/documents/parse",
+            json={"document_ids": [document_id]},
         )
 
     async def get_document(self, dataset_id: str, document_id: str) -> dict[str, Any]:
@@ -187,7 +193,9 @@ class RAGFlowClient:
         if not isinstance(result, dict):
             raise RAGFlowProtocolError("RAGFlow retrieval data is not an object")
         chunks = result.get("chunks") or []
-        if not isinstance(chunks, list) or not all(isinstance(item, dict) for item in chunks):
+        if not isinstance(chunks, list) or not all(
+            isinstance(item, dict) for item in chunks
+        ):
             raise RAGFlowProtocolError("RAGFlow retrieval chunks are invalid")
         total = result.get("total", len(chunks))
         if not isinstance(total, int) or total < 0:
@@ -230,7 +238,9 @@ async def ingest_into_ragflow(
             dataset_id=dataset["id"],
             dataset_name=dataset["name"],
             document_id=document_id,
-            document_name=str(final_doc.get("name") or document.get("name") or artifact.filename),
+            document_name=str(
+                final_doc.get("name") or document.get("name") or artifact.filename
+            ),
             parse_status=str(final_doc.get("run") or ""),
             chunk_count=_maybe_int(final_doc.get("chunk_count")),
             token_count=_maybe_int(final_doc.get("token_count")),
@@ -324,11 +334,14 @@ async def _wait_for_document_parse(
         progress = _maybe_float(last_doc.get("progress"))
         if run in terminal or (progress is not None and progress >= 1.0):
             if run == "FAIL":
-                raise RAGFlowError(str(last_doc.get("progress_msg") or "RAGFlow parse failed"))
+                raise RAGFlowError(
+                    str(last_doc.get("progress_msg") or "RAGFlow parse failed")
+                )
             return last_doc
         await _sleep(interval_seconds)
     raise RAGFlowError(
-        f"RAGFlow parse timed out for document {document_id}: {last_doc.get('progress_msg')}"
+        "RAGFlow parse timed out for document "
+        f"{document_id}: {last_doc.get('progress_msg')}"
     )
 
 
@@ -349,17 +362,23 @@ async def resolve_artifact_content(
 ) -> ArtifactContent:
     del title, canonical_url, metadata_json, source_document_version_id
     if len(source_artifact_refs) != 1:
-        raise RAGFlowError("Artifact contract requires exactly one immutable S3 artifact")
+        raise RAGFlowError(
+            "Artifact contract requires exactly one immutable S3 artifact"
+        )
     return await _resolve_artifact_ref(settings, source_artifact_refs[0])
 
 
-async def _resolve_artifact_ref(settings: Settings, ref: dict[str, Any]) -> ArtifactContent:
+async def _resolve_artifact_ref(
+    settings: Settings, ref: dict[str, Any]
+) -> ArtifactContent:
     uri = ref.get("uri")
     if not isinstance(uri, str) or not uri.startswith("s3://"):
         raise RAGFlowError("Artifact contract only accepts s3:// references")
     parts = urlsplit(uri)
     if parts.query or parts.fragment or parts.username or parts.password:
-        raise RAGFlowError("Artifact S3 URI must not contain query, fragment or userinfo")
+        raise RAGFlowError(
+            "Artifact S3 URI must not contain query, fragment or userinfo"
+        )
     bucket = parts.netloc
     object_key = unquote(parts.path.lstrip("/"))
     if bucket not in settings.artifact_bucket_allowlist:
@@ -375,7 +394,11 @@ async def _resolve_artifact_ref(settings: Settings, ref: dict[str, Any]) -> Arti
 async def _fetch_s3_object(
     settings: Settings, bucket: str, object_key: str, ref: dict[str, Any]
 ) -> ArtifactContent:
-    if not settings.s3_endpoint or not settings.s3_access_key_id or not settings.s3_secret_access_key:
+    if (
+        not settings.s3_endpoint
+        or not settings.s3_access_key_id
+        or not settings.s3_secret_access_key
+    ):
         raise RAGFlowError("S3 artifact provided but S3 credentials are not configured")
     endpoint = settings.s3_endpoint.rstrip("/")
     parsed = urlsplit(endpoint)
@@ -402,7 +425,9 @@ async def _fetch_s3_object(
         raise RAGFlowError(f"Artifact content type is not allowed: {media_type}")
 
     if settings.s3_force_path_style:
-        path = "/" + "/".join(quote(part, safe="") for part in [bucket, *object_key.split("/")])
+        path = "/" + "/".join(
+            quote(part, safe="") for part in [bucket, *object_key.split("/")]
+        )
         host = parsed.netloc
     else:
         path = "/" + "/".join(quote(part, safe="") for part in object_key.split("/"))
@@ -457,8 +482,13 @@ async def _fetch_s3_object(
                 )
                 async for chunk in response.aiter_bytes():
                     received += len(chunk)
-                    if received > expected_size or received > settings.artifact_max_size_bytes:
-                        raise RAGFlowError("S3 object exceeded the declared artifact size")
+                    if (
+                        received > expected_size
+                        or received > settings.artifact_max_size_bytes
+                    ):
+                        raise RAGFlowError(
+                            "S3 object exceeded the declared artifact size"
+                        )
                     chunks.append(chunk)
         except httpx.HTTPError as exc:
             raise _s3_http_error(exc) from exc
@@ -505,7 +535,9 @@ def _media_type(value: str) -> str:
 
 def _s3_http_error(exc: httpx.HTTPError) -> RAGFlowError:
     if isinstance(exc, httpx.HTTPStatusError):
-        return RAGFlowError(f"S3 object request failed with HTTP {exc.response.status_code}")
+        return RAGFlowError(
+            f"S3 object request failed with HTTP {exc.response.status_code}"
+        )
     return RAGFlowError("S3 object request failed")
 
 
@@ -529,9 +561,18 @@ def _s3_sigv4_headers(
         "x-amz-date": amz_date,
     }
     signed_headers = "host;x-amz-content-sha256;x-amz-date"
-    canonical_headers = "".join(f"{key}:{headers[key]}\n" for key in signed_headers.split(";"))
+    canonical_headers = "".join(
+        f"{key}:{headers[key]}\n" for key in signed_headers.split(";")
+    )
     canonical_request = "\n".join(
-        [method, canonical_uri, canonical_query, canonical_headers, signed_headers, payload_hash]
+        [
+            method,
+            canonical_uri,
+            canonical_query,
+            canonical_headers,
+            signed_headers,
+            payload_hash,
+        ]
     )
     scope = f"{datestamp}/{region}/s3/aws4_request"
     string_to_sign = "\n".join(
@@ -543,7 +584,9 @@ def _s3_sigv4_headers(
         ]
     )
     signing_key = _aws_signing_key(secret_key, datestamp, region)
-    signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+    signature = hmac.new(
+        signing_key, string_to_sign.encode(), hashlib.sha256
+    ).hexdigest()
     headers["Authorization"] = (
         f"AWS4-HMAC-SHA256 Credential={access_key}/{scope}, "
         f"SignedHeaders={signed_headers}, Signature={signature}"
@@ -552,7 +595,9 @@ def _s3_sigv4_headers(
 
 
 def _aws_signing_key(secret_key: str, datestamp: str, region: str) -> bytes:
-    date_key = hmac.new(f"AWS4{secret_key}".encode(), datestamp.encode(), hashlib.sha256).digest()
+    date_key = hmac.new(
+        f"AWS4{secret_key}".encode(), datestamp.encode(), hashlib.sha256
+    ).digest()
     region_key = hmac.new(date_key, region.encode(), hashlib.sha256).digest()
     service_key = hmac.new(region_key, b"s3", hashlib.sha256).digest()
     return hmac.new(service_key, b"aws4_request", hashlib.sha256).digest()
@@ -563,7 +608,12 @@ def _dataset_name(target_dataset: str) -> str:
 
 
 def _name_from_ref(ref: dict[str, Any], object_key: str | None = None) -> str:
-    for value in (ref.get("filename"), ref.get("name"), object_key, ref.get("object_key")):
+    for value in (
+        ref.get("filename"),
+        ref.get("name"),
+        object_key,
+        ref.get("object_key"),
+    ):
         if isinstance(value, str) and value.strip():
             return PurePosixPath(value).name or "document.txt"
     artifact_type = ref.get("artifact_type") or ref.get("kind") or "document"

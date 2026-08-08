@@ -8,6 +8,12 @@ from urllib.parse import urlsplit, urlunsplit
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.dto.retrieval import (
+    Evidence,
+    KnowledgeRetrievalRequest,
+    KnowledgeRetrievalResponse,
+    ProviderMetadata,
+)
 from app.application.errors.exceptions import (
     BadGatewayError,
     ForbiddenError,
@@ -25,12 +31,6 @@ from app.infrastructure.external.ragflow import (
 from app.infrastructure.models.knowledge import (
     KnowledgeDocument,
     KnowledgeDocumentVersion,
-)
-from app.interfaces.schemas.retrieval import (
-    Evidence,
-    KnowledgeRetrievalRequest,
-    KnowledgeRetrievalResponse,
-    ProviderMetadata,
 )
 from core.config import get_settings
 
@@ -57,7 +57,11 @@ async def retrieve_knowledge(
 
     versions = await _eligible_versions(session, payload)
     tenant_scope = f"tenant:{payload.security_context.tenant_id}"
-    versions = [version for version in versions if tenant_scope in set(version.access_scope or [])]
+    versions = [
+        version
+        for version in versions
+        if tenant_scope in set(version.access_scope or [])
+    ]
     if not versions:
         return KnowledgeRetrievalResponse(
             retrieval_id=uuid.uuid4(),
@@ -70,7 +74,9 @@ async def retrieve_knowledge(
         raise ServiceUnavailableError("knowledge retrieval provider is not configured")
 
     provider_dataset_ids = sorted({version.provider_dataset_id for version in versions})
-    provider_document_ids = sorted({version.provider_document_id for version in versions})
+    provider_document_ids = sorted(
+        {version.provider_document_id for version in versions}
+    )
     client = RAGFlowClient(
         settings,
         timeout_seconds=settings.retrieval_provider_timeout_seconds,
@@ -85,9 +91,13 @@ async def retrieve_knowledge(
     except RAGFlowTimeoutError as exc:
         raise GatewayTimeoutError("knowledge retrieval provider timed out") from exc
     except RAGFlowProtocolError as exc:
-        raise BadGatewayError("knowledge retrieval provider returned an invalid response") from exc
+        raise BadGatewayError(
+            "knowledge retrieval provider returned an invalid response"
+        ) from exc
     except RAGFlowError as exc:
-        raise ServiceUnavailableError("knowledge retrieval provider is unavailable") from exc
+        raise ServiceUnavailableError(
+            "knowledge retrieval provider is unavailable"
+        ) from exc
     finally:
         await client.close()
 
@@ -165,7 +175,9 @@ def _assemble_response(
             continue
         remaining_budget -= token_estimate
         provider_chunk_id = _text(chunk.get("id") or chunk.get("chunk_id"))
-        fingerprint = provider_chunk_id or hashlib.sha256(content.encode("utf-8")).hexdigest()
+        fingerprint = (
+            provider_chunk_id or hashlib.sha256(content.encode("utf-8")).hexdigest()
+        )
         chunk_id = uuid.uuid5(CHUNK_NAMESPACE, f"{version.id}:{fingerprint}")
         evidence_id = uuid.uuid5(EVIDENCE_NAMESPACE, f"{version.id}:{fingerprint}")
         evidence.append(

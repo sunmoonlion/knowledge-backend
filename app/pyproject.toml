@@ -1,20 +1,20 @@
 [project]
-name = "knowledge-admin-backend"
-version = "0.1.0"
-description = "通用后台管理 API 服务模板"
+name = "knowledge-backend"
+version = "2.0.0.dev0"
+description = "Admin 与 Web 共用的生产级 FastAPI 后端模板"
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.16.0",
     "asyncpg>=0.30.0",
     "fastapi>=0.116.0",
     "httpx>=0.28.0",
+    "joserfc>=1.7.3,<2.0.0",
     "pydantic>=2.11.0",
     "pydantic-settings>=2.10.0",
     "redis>=6.4.0",
     "celery>=5.5.0",
     "sqlalchemy>=2.0.0",
     "uvicorn[standard]>=0.35.0",
-    "joserfc>=1.7.3,<2.0.0",
 ]
 
 [dependency-groups]
@@ -22,9 +22,9 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.24.0",
     "httpx>=0.28.0",
-    "pyright>=1.1.400",
     "jsonschema>=4.26.0",
-    "ruff>=0.16.0",
+    "pyright>=1.1.400",
+    "ruff",
 ]
 
 [tool.pytest.ini_options]
@@ -50,12 +50,10 @@ exclude = ["alembic"]
 [tool.ruff]
 target-version = "py312"
 line-length = 88
+exclude = ["alembic/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]
-# Existing Knowledge domain routes still use FastAPI dependency factories in
-# defaults. Converting those signatures is a separate domain API migration.
-ignore = ["E501", "B008", "UP046"]
 
 [tool.ruff.lint.per-file-ignores]
 "app/interfaces/endpoints/**" = ["B008"]

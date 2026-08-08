@@ -156,7 +156,9 @@ async def update_ingestion_status(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@router.post("/ingestions/{ingestion_id}/dispatch", response_model=KnowledgeIngestionRead)
+@router.post(
+    "/ingestions/{ingestion_id}/dispatch", response_model=KnowledgeIngestionRead
+)
 async def dispatch_ingestion(
     ingestion_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)
 ):

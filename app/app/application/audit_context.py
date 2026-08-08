@@ -20,7 +20,7 @@ class AuditContext:
 
 
 _current_context: ContextVar[AuditContext | None] = ContextVar(
-    "tpl_audit_context", default=None
+    "knowledge_audit_context", default=None
 )
 
 

@@ -6,4 +6,3 @@ from app.domain.security.principal import (
 )
 
 __all__ = ["BrowserSession", "LoginStart", "Principal", "SessionStart"]
-

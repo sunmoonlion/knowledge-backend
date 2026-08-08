@@ -220,7 +220,9 @@ async def test_resolve_artifact_content_verifies_version_size_type_and_hash(
             "content-type": "text/markdown; charset=utf-8",
             "x-amz-version-id": "version-1",
         }
-        return httpx.Response(200, headers=headers, content=b"" if request.method == "HEAD" else content)
+        return httpx.Response(
+            200, headers=headers, content=b"" if request.method == "HEAD" else content
+        )
 
     _patch_s3_http(monkeypatch, handler)
     artifact = await resolve_artifact_content(
@@ -308,7 +310,11 @@ async def test_resolve_artifact_content_classifies_s3_access_failures(
 @pytest.mark.parametrize(
     ("header_version", "expected_hash", "message"),
     [
-        ("wrong-version", hashlib.sha256(b"# hello").hexdigest(), "storage version mismatch"),
+        (
+            "wrong-version",
+            hashlib.sha256(b"# hello").hexdigest(),
+            "storage version mismatch",
+        ),
         ("version-1", "0" * 64, "sha256 mismatch"),
     ],
 )
@@ -390,7 +396,9 @@ def test_s3_sigv4_headers_include_signed_authorization() -> None:
     )
 
     assert headers["Authorization"].startswith("AWS4-HMAC-SHA256 Credential=access/")
-    assert "SignedHeaders=host;x-amz-content-sha256;x-amz-date" in headers["Authorization"]
+    assert (
+        "SignedHeaders=host;x-amz-content-sha256;x-amz-date" in headers["Authorization"]
+    )
     assert headers["x-amz-content-sha256"]
     assert headers["x-amz-date"]
 
@@ -398,7 +406,9 @@ def test_s3_sigv4_headers_include_signed_authorization() -> None:
 def test_ragflow_enabled_requires_base_and_key() -> None:
     assert not Settings(RAGFLOW_API_BASE="http://ragflow:9380").ragflow_enabled
     assert not Settings(RAGFLOW_API_KEY="token").ragflow_enabled
-    assert Settings(RAGFLOW_API_BASE="http://ragflow:9380", RAGFLOW_API_KEY="token").ragflow_enabled
+    assert Settings(
+        RAGFLOW_API_BASE="http://ragflow:9380", RAGFLOW_API_KEY="token"
+    ).ragflow_enabled
 
 
 async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
@@ -412,17 +422,26 @@ async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
             return httpx.Response(
                 200, json={"code": 0, "data": {"id": "dataset-1", "name": "target"}}
             )
-        if request.method == "POST" and request.url.path == "/api/v1/datasets/dataset-1/documents":
+        if (
+            request.method == "POST"
+            and request.url.path == "/api/v1/datasets/dataset-1/documents"
+        ):
             return httpx.Response(
                 200,
-                json={"code": 0, "data": [{"id": "document-1", "name": "Inline-Smoke.txt"}]},
+                json={
+                    "code": 0,
+                    "data": [{"id": "document-1", "name": "Inline-Smoke.txt"}],
+                },
             )
         if (
             request.method == "POST"
             and request.url.path == "/api/v1/datasets/dataset-1/documents/parse"
         ):
             return httpx.Response(200, json={"code": 0})
-        if request.method == "GET" and request.url.path == "/api/v1/datasets/dataset-1/documents":
+        if (
+            request.method == "GET"
+            and request.url.path == "/api/v1/datasets/dataset-1/documents"
+        ):
             return httpx.Response(
                 200,
                 json={
@@ -454,7 +473,9 @@ async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
             content_type="text/plain",
         )
 
-    monkeypatch.setattr("app.infrastructure.external.ragflow.RAGFlowClient", make_client)
+    monkeypatch.setattr(
+        "app.infrastructure.external.ragflow.RAGFlowClient", make_client
+    )
     monkeypatch.setattr(
         "app.infrastructure.external.ragflow.resolve_artifact_content",
         resolve_contract_artifact,

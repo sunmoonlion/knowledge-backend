@@ -181,7 +181,9 @@ def test_token_budget_is_enforced_and_marked_truncated() -> None:
 
 
 def test_citation_projection_contains_only_safe_relative_source_link() -> None:
-    evidence = KnowledgeRetrievalResponse.model_validate(_example("response.json")).evidence[0]
+    evidence = KnowledgeRetrievalResponse.model_validate(
+        _example("response.json")
+    ).evidence[0]
     citation = Citation.from_evidence(evidence)
     raw = citation.model_dump(mode="json")
 
