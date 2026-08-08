@@ -70,7 +70,9 @@ async def test_service_identity_rejects_unbound_or_escalated_scope() -> None:
 
     escalated = ServiceIdentityVerifier(  # type: ignore[arg-type]
         settings(),
-        oidc_client=FakeOidcClient(claims(scope="knowledge:retrieve knowledge:admin")),
+        oidc_client=FakeOidcClient(
+            claims(scope="knowledge:retrieve knowledge:admin")
+        ),
     )
     with pytest.raises(ForbiddenError) as error:
         await escalated.verify(

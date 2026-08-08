@@ -127,14 +127,10 @@ async def test_admin_signup_is_forbidden_but_web_signup_is_supported(
     config = settings()
     with pytest.raises(UnauthorizedError):
         await StubAuthService(
-            "admin",
-            config,
-            FakeOidc(),  # type: ignore[arg-type]
+            "admin", config, FakeOidc()  # type: ignore[arg-type]
         ).begin_login(mode="signup")
     result = await StubAuthService(
-        "web",
-        config,
-        FakeOidc(),  # type: ignore[arg-type]
+        "web", config, FakeOidc()  # type: ignore[arg-type]
     ).begin_login(mode="signup")
     assert result.transaction_id
 
@@ -146,9 +142,7 @@ async def test_csrf_is_bound_to_each_surface_origin(
     redis = FakeRedis()
     monkeypatch.setattr(auth_module, "get_redis", lambda: FakeRedisHolder(redis))
     service = StubAuthService(
-        "web",
-        settings(),
-        FakeOidc(),  # type: ignore[arg-type]
+        "web", settings(), FakeOidc()  # type: ignore[arg-type]
     )
     start = await service.begin_login()
     state = parse_qs(urlsplit(start.authorization_url).query)["state"][0]
@@ -204,9 +198,7 @@ async def test_policy_or_surface_change_invalidates_existing_session(
 
 def test_provider_claims_are_filtered_by_surface_local_allowlist() -> None:
     service = AuthService(
-        "web",
-        settings(),
-        FakeOidc(),  # type: ignore[arg-type]
+        "web", settings(), FakeOidc()  # type: ignore[arg-type]
     )
     assert service._allowed_claims(
         (["editor", "provider-admin"],), service.profile.role_allowlist
