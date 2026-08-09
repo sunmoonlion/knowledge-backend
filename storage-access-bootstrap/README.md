@@ -1,7 +1,7 @@
-# storage-access-bootstrap (admin-backend)
+# storage-access-bootstrap (unified backend)
 
 This directory declares and provisions standard S3 access for
-`knowledge-admin-backend`.
+`knowledge-backend`.
 
 It is disabled by default. Enable it only when this Backend owns a distinct
 set of object data inside the App domain.
@@ -17,26 +17,13 @@ The declaration contains no credentials. The Data Platform provisioner creates
 an IAM identity and writes these resources to the target Namespace:
 
 ```text
-Secret:    knowledge-admin-backend-s3
-ConfigMap: knowledge-admin-backend-s3
+Secret:    knowledge-backend-s3
+ConfigMap: knowledge-backend-s3
 ```
 
-The Backend Deployment should reference both resources with `envFrom`.
-When generating its Kubernetes deployment with `k8s-scaffold`, use:
-
-```bash
-./k8s-scaffold/scaffold.sh knowledge-admin-backend 8001 \
-  --type backend \
-  --with-object-storage
-```
-
-For an existing generated deployment, set these fields in its
-`generate-app.conf`:
-
-```text
-KNOWLEDGE_ADMIN_BACKEND_OBJECT_STORAGE_CONFIGMAP_NAME=knowledge-admin-backend-s3
-KNOWLEDGE_ADMIN_BACKEND_OBJECT_STORAGE_SECRET_NAME=knowledge-admin-backend-s3
-```
+The architecture-v2 deployment generator must reference both resources with
+`envFrom`. The exact Deployment wiring is established during R5; do not copy
+the legacy `knowledge-admin-backend` K8s scaffold into the unified Backend.
 
 ## Commands
 

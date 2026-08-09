@@ -2,16 +2,16 @@
   "apiVersion": "storage.sunmoonai.com/v1alpha1",
   "kind": "ObjectStorageAccess",
   "metadata": {
-    "name": "knowledge-admin-backend"
+    "name": "knowledge-backend"
   },
   "spec": {
     "provider": "platform-s3",
     "environment": "development",
     "app": "knowledge-app",
-    "backend": "knowledge-admin-backend",
+    "backend": "knowledge-backend",
     "namespace": "app-platform-dev",
-    "secretName": "knowledge-admin-backend-s3",
-    "configMapName": "knowledge-admin-backend-s3",
+    "secretName": "knowledge-backend-s3",
+    "configMapName": "knowledge-backend-s3",
     "region": "us-east-1",
     "forcePathStyle": true,
     "useTLS": false,
