@@ -49,10 +49,13 @@ def test_one_linear_canonical_migration_chain() -> None:
         "20260808_0004_outbox_primitives.py",
     ]
     contents = [path.read_text() for path in revisions]
-    assert sum(
-        re.search(r"down_revision(?:\s*:[^=]+)?\s*=\s*None", content) is not None
-        for content in contents
-    ) == 1
+    assert (
+        sum(
+            re.search(r"down_revision(?:\s*:[^=]+)?\s*=\s*None", content) is not None
+            for content in contents
+        )
+        == 1
+    )
     assert 'down_revision = "20260710_0001"' in contents[1]
     assert 'down_revision = "20260712_0002"' in contents[2]
     assert 'down_revision = "20260715_0003"' in contents[3]
