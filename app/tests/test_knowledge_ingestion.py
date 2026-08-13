@@ -26,6 +26,7 @@ from app.infrastructure.external.ragflow import (
     RAGFlowClient,
     RAGFlowConfigCheck,
     RAGFlowError,
+    RAGFlowParseError,
     _s3_sigv4_headers,
     check_ragflow_config,
     ingest_into_ragflow,
@@ -562,6 +563,15 @@ def test_classify_ingestion_error_marks_external_ragflow_error() -> None:
 
     assert status == "external_api_error"
     assert metadata == {"error_type": "external_api_error", "system": "ragflow"}
+
+
+def test_classify_ingestion_error_marks_explicit_parse_failure() -> None:
+    status, metadata = classify_ingestion_error(
+        RAGFlowParseError("embedding provider returned a transient TLS failure")
+    )
+
+    assert status == "ragflow_parse_failed"
+    assert metadata == {"error_type": "ragflow_parse_failed"}
 
 
 async def test_ragflow_config_check_reports_missing_default_embedding() -> None:

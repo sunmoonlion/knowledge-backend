@@ -27,6 +27,10 @@ class RAGFlowProtocolError(RAGFlowError):
     pass
 
 
+class RAGFlowParseError(RAGFlowError):
+    pass
+
+
 @dataclass(frozen=True)
 class ArtifactContent:
     filename: str
@@ -334,12 +338,12 @@ async def _wait_for_document_parse(
         progress = _maybe_float(last_doc.get("progress"))
         if run in terminal or (progress is not None and progress >= 1.0):
             if run == "FAIL":
-                raise RAGFlowError(
+                raise RAGFlowParseError(
                     str(last_doc.get("progress_msg") or "RAGFlow parse failed")
                 )
             return last_doc
         await _sleep(interval_seconds)
-    raise RAGFlowError(
+    raise RAGFlowParseError(
         "RAGFlow parse timed out for document "
         f"{document_id}: {last_doc.get('progress_msg')}"
     )

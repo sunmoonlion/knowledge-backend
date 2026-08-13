@@ -28,10 +28,10 @@ def _retrieval_settings() -> Settings:
     return _settings().model_copy(
         update={
             "retrieval_auth_casdoor_application": (
-                "sunmoonai-research-knowledge-retrieve"
+                "sunmoonai-investment-knowledge-retrieve"
             ),
             "retrieval_auth_audience": "retrieval-client",
-            "retrieval_auth_subject_allowlist": "research-worker",
+            "retrieval_auth_subject_allowlist": "investment-agent-worker",
             "retrieval_auth_required_scope": "knowledge:retrieve",
         }
     )
@@ -161,14 +161,14 @@ async def test_retrieval_relation_is_independent_from_ingestion_relation() -> No
     _bind_test_key(verifier, key)
     retrieval_token = _token(
         key,
-        sub="research-worker",
+        sub="investment-agent-worker",
         aud="retrieval-client",
         scope="openid",
     )
 
     principal = await verifier.verify(retrieval_token)
 
-    assert principal.subject == "research-worker"
+    assert principal.subject == "investment-agent-worker"
     assert principal.audience == "retrieval-client"
     assert principal.scopes == frozenset({"knowledge:retrieve"})
 

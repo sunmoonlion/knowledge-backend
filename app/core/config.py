@@ -135,8 +135,8 @@ class Settings(BaseSettings):
     internal_auth_subject_allowlist: str = ""
     internal_auth_required_scope: str = "knowledge:ingest"
 
-    # Research -> Knowledge retrieval resource boundary.
-    retrieval_auth_casdoor_application: str = "sunmoonai-research-knowledge-retrieve"
+    # Investment -> Knowledge retrieval resource boundary.
+    retrieval_auth_casdoor_application: str = "sunmoonai-investment-knowledge-retrieve"
     retrieval_auth_discovery_url: str | None = None
     retrieval_auth_backchannel_endpoint: str | None = None
     retrieval_auth_audience: str | None = None

@@ -247,7 +247,7 @@ def _principal(scope: str = "knowledge:retrieve") -> Principal:
     now = datetime.now(UTC)
     return Principal(
         actor_type="service",
-        subject="research-worker",
+        subject="investment-agent-worker",
         issuer="https://identity.example.test",
         app="knowledge",
         surface="internal",

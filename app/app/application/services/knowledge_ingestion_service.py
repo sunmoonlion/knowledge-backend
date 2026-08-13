@@ -12,6 +12,7 @@ from app.application.dto.knowledge import KnowledgeIngestionCreate
 from app.domain.security import Principal
 from app.infrastructure.external.ragflow import (
     RAGFlowError,
+    RAGFlowParseError,
     check_ragflow_config,
     ingest_into_ragflow,
     resolve_artifact_content,
@@ -339,7 +340,9 @@ def classify_ingestion_error(exc: BaseException) -> tuple[str, dict[str, Any]]:
         return "artifact_unreadable", {"error_type": "artifact_unreadable"}
     if "no default embedding model" in message_lower:
         return "ragflow_config_error", {"error_type": "ragflow_config_error"}
-    if "parse timed out" in message_lower or "parse failed" in message_lower:
+    if isinstance(exc, RAGFlowParseError) or (
+        "parse timed out" in message_lower or "parse failed" in message_lower
+    ):
         return "ragflow_parse_failed", {"error_type": "ragflow_parse_failed"}
     if isinstance(exc, RAGFlowError):
         return "external_api_error", {
