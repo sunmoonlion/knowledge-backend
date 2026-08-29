@@ -187,7 +187,9 @@ def test_citation_projection_contains_only_safe_relative_source_link() -> None:
     citation = Citation.from_evidence(evidence)
     raw = citation.model_dump(mode="json")
 
-    assert citation.source_href == f"/api/citations/{evidence.evidence_id}/source"
+    assert citation.source_href == (
+        f"/api/web/v1/citations/{evidence.evidence_id}/source"
+    )
     assert "source_uri" not in raw
     assert "provider_metadata" not in raw
     assert "ragflow" not in json.dumps(raw)
@@ -274,3 +276,32 @@ async def test_unknown_dataset_is_forbidden_before_provider_call(monkeypatch) ->
             service_principal=_principal(),
         )
     get_settings.cache_clear()
+
+
+def test_citation_source_href_resolves_to_a_real_route() -> None:
+    """契约声明的 source_href 必须真的能 GET 到。
+
+    O6 的成因：`citation.schema.json` 与两侧 DTO 都写 `/api/citations/{id}/source`，
+    而真实路由挂在 `/api/web/v1/` 下——照契约字面拼路径去 GET 一律 404。
+    三处各自断言"字符串等于某个常量"，谁也没有和路由表比对过，所以三处一起错、
+    测试全绿。这里改为拿契约的正则去**真实路由表**里找。
+    """
+    import re
+    import uuid as _uuid
+
+    from fastapi.routing import APIRoute
+
+    from app.application.dto.retrieval import Citation
+    from app.bootstrap.api import create_app
+
+    pattern = Citation.model_fields["source_href"].metadata[-1].pattern
+    sample = f"/api/web/v1/citations/{_uuid.uuid4()}/source"
+    assert re.match(pattern, sample), "样例须先满足契约正则"
+
+    # 把真实路由的 {param} 占位换成 uuid，再看契约正则能否匹配上任何一条
+    routes = [r.path for r in create_app().routes if isinstance(r, APIRoute)]
+    concrete = [re.sub(r"\{[^}]+\}", str(_uuid.uuid4()), p) for p in routes]
+    assert any(re.match(pattern, p) for p in concrete), (
+        f"契约 source_href 的 pattern {pattern!r} 匹配不到任何真实路由；"
+        f"含 citations 的路由有：{[p for p in routes if 'citations' in p]}"
+    )
