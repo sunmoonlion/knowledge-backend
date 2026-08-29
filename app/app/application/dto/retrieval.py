@@ -122,8 +122,8 @@ class Citation(BaseModel):
     source_document_version_id: uuid.UUID
     content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     source_href: str = Field(
-        max_length=128,
-        pattern=r"^/api/citations/[0-9a-fA-F-]{36}/source$",
+        max_length=160,
+        pattern=r"^/api/web/v1/citations/[0-9a-fA-F-]{36}/source$",
     )
 
     model_config = ConfigDict(extra="forbid")
@@ -140,5 +140,5 @@ class Citation(BaseModel):
             source_document_id=evidence.source_document_id,
             source_document_version_id=evidence.source_document_version_id,
             content_hash=evidence.content_hash,
-            source_href=f"/api/citations/{evidence.evidence_id}/source",
+            source_href=f"/api/web/v1/citations/{evidence.evidence_id}/source",
         )

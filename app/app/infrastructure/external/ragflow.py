@@ -31,6 +31,15 @@ class RAGFlowParseError(RAGFlowError):
     pass
 
 
+class RAGFlowParseCancelledError(RAGFlowParseError):
+    """解析被取消（RAGFlow run=CANCEL）。
+
+    继承 RAGFlowParseError，因此沿用其可重试的错误分类；单独立类是为了在
+    metadata 里与「解析失败」区分开——取消多为运维动作或 RAGFlow 侧重启，
+    排查方向不同。
+    """
+
+
 @dataclass(frozen=True)
 class ArtifactContent:
     filename: str
@@ -331,22 +340,43 @@ async def _wait_for_document_parse(
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_seconds
     last_doc: dict[str, Any] = {}
-    terminal = {"DONE", "FAIL", "CANCEL"}
     while time.monotonic() <= deadline:
         last_doc = await client.get_document(dataset_id, document_id)
-        run = str(last_doc.get("run") or "").upper()
-        progress = _maybe_float(last_doc.get("progress"))
-        if run in terminal or (progress is not None and progress >= 1.0):
-            if run == "FAIL":
-                raise RAGFlowParseError(
-                    str(last_doc.get("progress_msg") or "RAGFlow parse failed")
-                )
+        run = _normalise_run(last_doc.get("run"))
+        if run == "DONE":
             return last_doc
+        if run == "FAIL":
+            raise RAGFlowParseError(
+                str(last_doc.get("progress_msg") or "RAGFlow parse failed")
+            )
+        if run == "CANCEL":
+            raise RAGFlowParseCancelledError(
+                str(last_doc.get("progress_msg") or "RAGFlow parse was cancelled")
+            )
         await _sleep(interval_seconds)
     raise RAGFlowParseError(
         "RAGFlow parse timed out for document "
         f"{document_id}: {last_doc.get('progress_msg')}"
     )
+
+
+# RAGFlow 的 run 在库里是数字（TaskStatus，见其 common/constants.py），
+# HTTP 列表端点经 map_doc_keys() 映射为文本再返回。两种都接受，避免
+# RAGFlow 版本漂移导致判定静默失效——只认文本时，若某版本直接吐数字，
+# 所有取值都落不进终态，只会一路轮询到超时。
+_RUN_ALIASES = {
+    "0": "UNSTART",
+    "1": "RUNNING",
+    "2": "CANCEL",
+    "3": "DONE",
+    "4": "FAIL",
+    "5": "SCHEDULE",
+}
+
+
+def _normalise_run(value: object) -> str:
+    run = str(value or "").strip().upper()
+    return _RUN_ALIASES.get(run, run)
 
 
 async def _sleep(seconds: float) -> None:
