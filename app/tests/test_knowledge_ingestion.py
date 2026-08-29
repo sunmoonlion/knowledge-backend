@@ -26,8 +26,10 @@ from app.infrastructure.external.ragflow import (
     RAGFlowClient,
     RAGFlowConfigCheck,
     RAGFlowError,
+    RAGFlowParseCancelledError,
     RAGFlowParseError,
     _s3_sigv4_headers,
+    _wait_for_document_parse,
     check_ragflow_config,
     ingest_into_ragflow,
     resolve_artifact_content,
@@ -638,3 +640,102 @@ async def test_service_ragflow_config_check_masks_secret(monkeypatch) -> None:
     assert result["ready"] is True
     assert result["details"] == {"api_key_configured": True, "tenant_id": "tenant-1"}
     assert "api_key" not in result["details"]
+
+
+class _StubRAGFlowClient:
+    """按序返回若干份 document 快照，用尽后重复最后一份。"""
+
+    def __init__(self, docs: list[dict[str, Any]]) -> None:
+        self._docs = docs
+        self.calls = 0
+
+    async def get_document(self, dataset_id: str, document_id: str) -> dict[str, Any]:
+        del dataset_id, document_id
+        doc = self._docs[min(self.calls, len(self._docs) - 1)]
+        self.calls += 1
+        return doc
+
+
+async def _wait(
+    docs: list[dict[str, Any]],
+    *,
+    timeout_seconds: int = 5,
+    interval_seconds: float = 0,
+):
+    return await _wait_for_document_parse(
+        client=_StubRAGFlowClient(docs),  # type: ignore[arg-type]
+        dataset_id="dataset-1",
+        document_id="document-1",
+        timeout_seconds=timeout_seconds,
+        interval_seconds=interval_seconds,
+    )
+
+
+@pytest.mark.anyio
+async def test_cancelled_parse_is_not_success() -> None:
+    """被取消的解析必须报错。
+
+    此前 CANCEL 与 DONE 同在 terminal 集合、只有 FAIL 抛错，于是取消的文档
+    走完 complete_ragflow_ingestion：version.status 落 "indexed"、job 落
+    "succeeded"。前者会被检索侧 _eligible_versions 选中（内容残缺却照常返回），
+    后者被 retry_ingestion_job 明确拒绝重试，连补救入口都没有。
+    """
+    with pytest.raises(RAGFlowParseCancelledError):
+        await _wait([{"id": "document-1", "run": "CANCEL", "progress": 0}])
+
+
+@pytest.mark.anyio
+async def test_cancelled_parse_is_retryable_but_distinguishable() -> None:
+    status, metadata = classify_ingestion_error(
+        RAGFlowParseCancelledError("cancelled by operator")
+    )
+    # 复用可重试的 ragflow_parse_failed（它不在 RETRY_BLOCKED_STATUSES 里）
+    assert status == "ragflow_parse_failed"
+    # 但 error_type 要能区分：取消多为运维动作，排查方向与解析失败不同
+    assert metadata["error_type"] == "ragflow_parse_cancelled"
+
+
+@pytest.mark.anyio
+async def test_progress_alone_does_not_signal_completion() -> None:
+    """progress 不再单独构成成功条件。
+
+    RAGFlow 在同一次更新里写 {"run": DONE, "progress": 1}
+    （见其 api/db/services/document_service.py），progress 不会先于 run 到 1。
+    因此以 progress 抢跑只有坏处：某些路径下 run 尚未落定就被当成完成。
+    """
+    # timeout 必须 > 0：否则循环一次都不进，新旧实现都走超时分支，测试会空转。
+    with pytest.raises(RAGFlowParseError):
+        await _wait(
+            [{"id": "document-1", "run": "RUNNING", "progress": 1.0}],
+            timeout_seconds=1,
+            interval_seconds=0.01,
+        )
+
+
+@pytest.mark.anyio
+async def test_numeric_run_codes_are_recognised() -> None:
+    """RAGFlow 库里 run 是数字，HTTP 端点映射为文本；两种都要认。
+
+    只认文本时，若某版本直接吐数字，所有取值都落不进终态，
+    只会一路轮询到超时——失效是静默的。
+    """
+    done = await _wait([{"id": "document-1", "run": "3"}])
+    assert done["run"] == "3"
+
+    with pytest.raises(RAGFlowParseCancelledError):
+        await _wait([{"id": "document-1", "run": "2"}])
+
+    with pytest.raises(RAGFlowParseError):
+        await _wait([{"id": "document-1", "run": "4"}])
+
+
+@pytest.mark.anyio
+async def test_parse_polls_until_terminal() -> None:
+    doc = await _wait(
+        [
+            {"id": "document-1", "run": "UNSTART"},
+            {"id": "document-1", "run": "RUNNING", "progress": 0.5},
+            {"id": "document-1", "run": "DONE", "chunk_count": 2},
+        ]
+    )
+    assert doc["chunk_count"] == 2

@@ -12,6 +12,7 @@ from app.application.dto.knowledge import KnowledgeIngestionCreate
 from app.domain.security import Principal
 from app.infrastructure.external.ragflow import (
     RAGFlowError,
+    RAGFlowParseCancelledError,
     RAGFlowParseError,
     check_ragflow_config,
     ingest_into_ragflow,
@@ -340,6 +341,10 @@ def classify_ingestion_error(exc: BaseException) -> tuple[str, dict[str, Any]]:
         return "artifact_unreadable", {"error_type": "artifact_unreadable"}
     if "no default embedding model" in message_lower:
         return "ragflow_config_error", {"error_type": "ragflow_config_error"}
+    if isinstance(exc, RAGFlowParseCancelledError):
+        # 取消与失败同属可重试的 ragflow_parse_failed，但 error_type 区分开：
+        # 取消多为运维动作或 RAGFlow 侧重启，排查方向与解析失败不同。
+        return "ragflow_parse_failed", {"error_type": "ragflow_parse_cancelled"}
     if isinstance(exc, RAGFlowParseError) or (
         "parse timed out" in message_lower or "parse failed" in message_lower
     ):
