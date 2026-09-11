@@ -78,5 +78,11 @@ def configure_celery(*, require_broker: bool = False) -> bool:
 if os.environ.get("CELERY_BROKER_URL"):
     configure_celery()
 
+import app.tasks.durable_delivery  # noqa: E402, F401 — shared durable transport
 import app.tasks.knowledge_ingestion  # noqa: E402, F401 — register tasks
 import app.tasks.ping  # noqa: E402, F401 — register tasks
+
+celery_app.conf.beat_schedule = {
+    **(celery_app.conf.beat_schedule or {}),
+    "durable-delivery": {"task": "app.tasks.durable_delivery.pump", "schedule": 5.0},
+}

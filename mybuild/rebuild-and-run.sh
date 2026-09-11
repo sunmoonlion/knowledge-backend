@@ -3,7 +3,7 @@
 
 set -e
 
-IMAGE_NAME="knowledge-backend:1.0.0"
+IMAGE_NAME="knowledge-backend:architecture-v2-dev"
 CONTAINER_NAME="knowledge-backend"
 
 echo "停止并删除旧容器..."

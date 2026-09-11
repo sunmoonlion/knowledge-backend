@@ -119,22 +119,111 @@ class RAGFlowClient:
             raise RAGFlowError(str(data.get("message") or data))
         return data
 
-    async def ensure_dataset(self, name: str) -> dict[str, Any]:
-        list_data = await self._request("GET", "/datasets", params={"page_size": 100})
-        for item in list_data.get("data") or []:
-            if item.get("name") == name:
-                return item
-        create_data = await self._request(
-            "POST",
-            "/datasets",
-            json={"name": name, "chunk_method": "naive", "permission": "me"},
-        )
-        return create_data["data"]
-
     async def list_datasets(self, page_size: int = 10) -> list[dict[str, Any]]:
         data = await self._request("GET", "/datasets", params={"page_size": page_size})
         datasets = data.get("data") or []
         return [item for item in datasets if isinstance(item, dict)]
+
+    async def find_datasets(self, name: str) -> list[dict[str, Any]]:
+        # v0.25.4 deliberately treats a missing exact name as an authorization
+        # error. Enumerate authorized datasets; never reinterpret denial as empty.
+        matches = []
+        seen = 0
+        for page in range(1, 101):
+            data = await self._request(
+                "GET",
+                "/datasets",
+                params={
+                    "page": page,
+                    "page_size": 100,
+                    "orderby": "create_time",
+                    "desc": "false",
+                },
+            )
+            items = data.get("data")
+            # The deployed response wrapper emits total_datasets, despite its
+            # docstring describing total. Accept both explicit pagination fields.
+            total = data.get("total_datasets", data.get("total"))
+            if (
+                not isinstance(items, list)
+                or not all(isinstance(item, dict) for item in items)
+                or not isinstance(total, int)
+                or isinstance(total, bool)
+                or total < 0
+            ):
+                raise RAGFlowProtocolError("invalid dataset lookup response")
+            matches.extend(item for item in items if item.get("name") == name)
+            seen += len(items)
+            if seen >= total:
+                return matches
+            if not items:
+                raise RAGFlowProtocolError("dataset lookup was truncated")
+        raise RAGFlowProtocolError("dataset lookup exceeded reconciliation limit")
+
+    async def create_dataset(self, name: str) -> dict[str, Any]:
+        data = await self._request(
+            "POST",
+            "/datasets",
+            json={
+                "name": name,
+                "chunk_method": "naive",
+                "permission": "me",
+            },
+        )
+        result = data.get("data")
+        if (
+            not isinstance(result, dict)
+            or result.get("name") != name
+            or not result.get("id")
+        ):
+            raise RAGFlowProtocolError("invalid dataset creation receipt")
+        return result
+
+    async def find_documents(
+        self, dataset_id: str, filename: str
+    ) -> list[dict[str, Any]]:
+        # `name` returns an API error on absence in v0.25.4; keywords supports an
+        # empty result. Filter exact names locally and refuse incomplete queries.
+        data = await self._request(
+            "GET",
+            f"/datasets/{dataset_id}/documents",
+            params={"keywords": filename, "page_size": 100},
+        )
+        result = data.get("data")
+        if not isinstance(result, dict) or not isinstance(result.get("docs"), list):
+            raise RAGFlowProtocolError("invalid document lookup response")
+        items = result["docs"]
+        if not all(isinstance(item, dict) for item in items):
+            raise RAGFlowProtocolError("invalid document lookup item")
+        if result.get("total", len(items)) > len(items):
+            raise RAGFlowProtocolError("document lookup was truncated")
+        return [item for item in items if item.get("name") == filename]
+
+    async def verify_document_content(
+        self, dataset_id: str, document_id: str, *, size: int, sha256: str
+    ) -> None:
+        digest = hashlib.sha256()
+        received = 0
+        try:
+            async with self._client.stream(
+                "GET",
+                f"{self._base}/datasets/{dataset_id}/documents/{document_id}",
+                headers=self._headers(),
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes():
+                    received += len(chunk)
+                    if received > size:
+                        raise RAGFlowProtocolError(
+                            "remote document exceeds expected size"
+                        )
+                    digest.update(chunk)
+        except httpx.HTTPError as exc:
+            raise RAGFlowError("remote document verification failed") from exc
+        if received != size or not hmac.compare_digest(digest.hexdigest(), sha256):
+            raise RAGFlowProtocolError(
+                "remote document content does not match source version"
+            )
 
     async def get_tenant_models(self) -> dict[str, Any]:
         data = await self._request("GET", "/users/me/models")
@@ -226,50 +315,7 @@ async def ingest_into_ragflow(
     metadata_json: dict[str, Any],
     source_document_version_id: str,
 ) -> RAGFlowIngestionResult:
-    artifact = await resolve_artifact_content(
-        settings=settings,
-        source_artifact_refs=source_artifact_refs,
-        title=title,
-        canonical_url=canonical_url,
-        metadata_json=metadata_json,
-        source_document_version_id=source_document_version_id,
-    )
-    client = RAGFlowClient(settings)
-    try:
-        dataset = await client.ensure_dataset(_dataset_name(target_dataset))
-        document = await client.upload_document(dataset["id"], artifact)
-        document_id = document["id"]
-        await client.parse_document(dataset["id"], document_id)
-        final_doc = await _wait_for_document_parse(
-            client=client,
-            dataset_id=dataset["id"],
-            document_id=document_id,
-            timeout_seconds=settings.ragflow_parse_timeout_seconds,
-            interval_seconds=settings.ragflow_parse_poll_interval_seconds,
-        )
-        return RAGFlowIngestionResult(
-            dataset_id=dataset["id"],
-            dataset_name=dataset["name"],
-            document_id=document_id,
-            document_name=str(
-                final_doc.get("name") or document.get("name") or artifact.filename
-            ),
-            parse_status=str(final_doc.get("run") or ""),
-            chunk_count=_maybe_int(final_doc.get("chunk_count")),
-            token_count=_maybe_int(final_doc.get("token_count")),
-            metadata={
-                "ragflow_dataset_id": dataset["id"],
-                "ragflow_dataset_name": dataset["name"],
-                "ragflow_document_name": str(
-                    final_doc.get("name") or document.get("name") or artifact.filename
-                ),
-                "ragflow_parse_status": str(final_doc.get("run") or ""),
-                "ragflow_chunk_count": _maybe_int(final_doc.get("chunk_count")),
-                "ragflow_token_count": _maybe_int(final_doc.get("token_count")),
-            },
-        )
-    finally:
-        await client.close()
+    raise RuntimeError("bare RAGFlow ingestion disabled; use durable provider receipts")
 
 
 async def check_ragflow_config(settings: Settings) -> RAGFlowConfigCheck:
@@ -635,10 +681,6 @@ def _aws_signing_key(secret_key: str, datestamp: str, region: str) -> bytes:
     region_key = hmac.new(date_key, region.encode(), hashlib.sha256).digest()
     service_key = hmac.new(region_key, b"s3", hashlib.sha256).digest()
     return hmac.new(service_key, b"aws4_request", hashlib.sha256).digest()
-
-
-def _dataset_name(target_dataset: str) -> str:
-    return target_dataset.strip() or "default"
 
 
 def _name_from_ref(ref: dict[str, Any], object_key: str | None = None) -> str:

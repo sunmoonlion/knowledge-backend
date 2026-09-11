@@ -9,13 +9,18 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.dto.knowledge import KnowledgeIngestionCreate
+from app.application.services.durable_tasks import enqueue_task
+from app.application.services.ragflow_delivery import (
+    RAGFlowOutcomeUnknown,
+    ingest_with_receipts,
+    upload_identity,
+)
 from app.domain.security import Principal
 from app.infrastructure.external.ragflow import (
     RAGFlowError,
     RAGFlowParseCancelledError,
     RAGFlowParseError,
     check_ragflow_config,
-    ingest_into_ragflow,
     resolve_artifact_content,
 )
 from app.infrastructure.models.knowledge import (
@@ -78,9 +83,6 @@ async def submit_ingestion(
     service_principal: Principal | None = None,
 ) -> KnowledgeIngestionJob:
     idempotency_key = build_idempotency_key(payload)
-    existing = await get_ingestion_by_idempotency_key(session, idempotency_key)
-    if existing is not None:
-        return existing
 
     accepted_metadata: dict[str, Any] | None = None
     if service_principal is not None:
@@ -97,7 +99,7 @@ async def submit_ingestion(
             }
         }
 
-    job = KnowledgeIngestionJob(
+    statement = insert(KnowledgeIngestionJob).values(
         source_app=payload.source_app,
         source_document_id=payload.source_document_id,
         source_document_version_id=payload.source_document_version_id,
@@ -114,7 +116,46 @@ async def submit_ingestion(
         status="accepted",
         status_history=[_status_entry("accepted", metadata=accepted_metadata)],
     )
-    session.add(job)
+    await session.execute(
+        statement.on_conflict_do_nothing(index_elements=["idempotency_key"])
+    )
+    job = await get_ingestion_by_idempotency_key(session, idempotency_key)
+    if job is None:
+        raise RuntimeError("ingestion acceptance did not persist")
+    if job.payload != _payload_dict(payload, idempotency_key):
+        raise ValueError("idempotency key already represents another ingestion intent")
+    if job.status not in TERMINAL_STATUSES:
+        await _enqueue_ingestion(session, job)
+    await session.commit()
+    await session.refresh(job)
+    return job
+
+
+async def _enqueue_ingestion(session: AsyncSession, job: KnowledgeIngestionJob) -> None:
+    generation = int((job.metadata_json or {}).get("retry_count") or 0)
+    await enqueue_task(
+        session,
+        topic="knowledge.ingest.v1",
+        key=str(upload_identity(job)),
+        payload={"ingestion_id": str(job.id)},
+        deduplication_key=f"knowledge:ingest:{job.id}:{generation}",
+    )
+
+
+async def request_ingestion_job(
+    session: AsyncSession, *, ingestion_id: uuid.UUID
+) -> KnowledgeIngestionJob:
+    job = (
+        await session.execute(
+            select(KnowledgeIngestionJob)
+            .where(KnowledgeIngestionJob.id == ingestion_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if job is None:
+        raise ValueError(f"ingestion job not found: {ingestion_id}")
+    if job.status not in TERMINAL_STATUSES:
+        await _enqueue_ingestion(session, job)
     await session.commit()
     await session.refresh(job)
     return job
@@ -366,7 +407,13 @@ async def retry_ingestion_job(
     force: bool = False,
     reason: str | None = None,
 ) -> KnowledgeIngestionJob:
-    job = await get_ingestion_job(session, ingestion_id)
+    job = (
+        await session.execute(
+            select(KnowledgeIngestionJob)
+            .where(KnowledgeIngestionJob.id == ingestion_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
     if job is None:
         raise ValueError(f"ingestion job not found: {ingestion_id}")
     if job.status not in TERMINAL_STATUSES:
@@ -412,6 +459,7 @@ async def retry_ingestion_job(
     job.completed_at = None
     job.status_history = history
     job.metadata_json = metadata_json
+    await _enqueue_ingestion(session, job)
     await session.commit()
     await session.refresh(job)
     return job
@@ -475,15 +523,21 @@ async def process_ingestion_job(
 
     if settings.ragflow_enabled:
         try:
-            result = await ingest_into_ragflow(
-                settings=settings,
-                target_dataset=job.target_dataset or "default",
-                title=job.title,
-                canonical_url=job.canonical_url,
-                source_artifact_refs=list(job.source_artifact_refs or []),
-                metadata_json=dict(job.metadata_json or {}),
-                source_document_version_id=str(job.source_document_version_id),
+            result = await ingest_with_receipts(session, job=job, settings=settings)
+        except RAGFlowOutcomeUnknown:
+            await update_ingestion_status(
+                session,
+                ingestion_id=ingestion_id,
+                status="reconciliation_required",
+                last_error="provider_outcome_unknown",
+                metadata={
+                    "processor": RAGFLOW_PROCESSOR_NAME,
+                    "error_type": "provider_outcome_unknown",
+                },
+                knowledge_document_id=None,
+                ragflow_document_id=None,
             )
+            raise
         except (RAGFlowError, OSError, ValueError) as exc:
             failure_status, failure_metadata = classify_ingestion_error(exc)
             return await update_ingestion_status(

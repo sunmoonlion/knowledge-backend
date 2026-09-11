@@ -58,6 +58,17 @@ class KnowledgeIngestionJob(UUIDMixin, TimestampMixin, Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class KnowledgeProviderOperation(TimestampMixin, Base):
+    """Durable external-effect intent/receipt, not a second document master."""
+
+    __tablename__ = "knowledge_provider_operation"
+
+    operation_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    intent: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(String(30), nullable=False)
+    receipt: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+
+
 class KnowledgeDocument(UUIDMixin, TimestampMixin, Base):
     __tablename__ = "knowledge_document"
     __table_args__ = (

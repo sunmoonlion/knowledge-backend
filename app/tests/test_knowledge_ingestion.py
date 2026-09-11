@@ -414,101 +414,17 @@ def test_ragflow_enabled_requires_base_and_key() -> None:
     ).ragflow_enabled
 
 
-async def test_ragflow_client_upload_parse_poll_flow(monkeypatch) -> None:
-    calls: list[tuple[str, str, str]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append((request.method, request.url.path, request.url.query.decode()))
-        if request.method == "GET" and request.url.path == "/api/v1/datasets":
-            return httpx.Response(200, json={"code": 0, "data": []})
-        if request.method == "POST" and request.url.path == "/api/v1/datasets":
-            return httpx.Response(
-                200, json={"code": 0, "data": {"id": "dataset-1", "name": "target"}}
-            )
-        if (
-            request.method == "POST"
-            and request.url.path == "/api/v1/datasets/dataset-1/documents"
-        ):
-            return httpx.Response(
-                200,
-                json={
-                    "code": 0,
-                    "data": [{"id": "document-1", "name": "Inline-Smoke.txt"}],
-                },
-            )
-        if (
-            request.method == "POST"
-            and request.url.path == "/api/v1/datasets/dataset-1/documents/parse"
-        ):
-            return httpx.Response(200, json={"code": 0})
-        if (
-            request.method == "GET"
-            and request.url.path == "/api/v1/datasets/dataset-1/documents"
-        ):
-            return httpx.Response(
-                200,
-                json={
-                    "code": 0,
-                    "data": {
-                        "docs": [
-                            {
-                                "id": "document-1",
-                                "name": "Inline-Smoke.txt",
-                                "run": "DONE",
-                                "chunk_count": 2,
-                                "token_count": 8,
-                            }
-                        ],
-                    },
-                },
-            )
-        return httpx.Response(404, json={"code": 404, "message": "unexpected"})
-
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-
-    def make_client(settings: Settings) -> RAGFlowClient:
-        return RAGFlowClient(settings, client=client)
-
-    async def resolve_contract_artifact(**kwargs: Any) -> ArtifactContent:
-        return ArtifactContent(
-            filename="Inline-Smoke.txt",
-            content=b"hello",
-            content_type="text/plain",
+async def test_bare_ragflow_ingestion_is_disabled() -> None:
+    with pytest.raises(RuntimeError, match="bare RAGFlow ingestion disabled"):
+        await ingest_into_ragflow(
+            settings=Settings(),
+            target_dataset="target",
+            title="Smoke",
+            canonical_url=None,
+            source_artifact_refs=[],
+            metadata_json={},
+            source_document_version_id="version-1",
         )
-
-    monkeypatch.setattr(
-        "app.infrastructure.external.ragflow.RAGFlowClient", make_client
-    )
-    monkeypatch.setattr(
-        "app.infrastructure.external.ragflow.resolve_artifact_content",
-        resolve_contract_artifact,
-    )
-    result = await ingest_into_ragflow(
-        settings=Settings(
-            RAGFLOW_API_BASE="http://ragflow:9380",
-            RAGFLOW_API_KEY="token",
-            RAGFLOW_PARSE_TIMEOUT_SECONDS=1,
-        ),
-        target_dataset="target",
-        title="Inline Smoke",
-        canonical_url=None,
-        source_artifact_refs=[_contract_payload()["artifact"]],
-        metadata_json={},
-        source_document_version_id="version-1",
-    )
-    await client.aclose()
-
-    assert result.dataset_id == "dataset-1"
-    assert result.document_id == "document-1"
-    assert result.parse_status == "DONE"
-    assert result.chunk_count == 2
-    assert calls == [
-        ("GET", "/api/v1/datasets", "page_size=100"),
-        ("POST", "/api/v1/datasets", ""),
-        ("POST", "/api/v1/datasets/dataset-1/documents", ""),
-        ("POST", "/api/v1/datasets/dataset-1/documents/parse", ""),
-        ("GET", "/api/v1/datasets/dataset-1/documents", "id=document-1"),
-    ]
 
 
 async def test_ragflow_client_wraps_http_errors() -> None:

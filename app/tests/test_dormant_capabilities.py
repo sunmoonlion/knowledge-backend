@@ -90,16 +90,6 @@ DORMANT: tuple[Dormant, ...] = (
         ),
     ),
     Dormant(
-        name="Outbox/Inbox 消费链路",
-        kind="deliberate",
-        evidence="Port、DTO、ORM、SQL 仓库类齐备，application/services 零调用",
-        anchor_exists=lambda: (
-            _exists("app/infrastructure/repositories/outbox.py")
-            and _exists("app/application/ports/outbox.py")
-        ),
-        still_dormant=lambda: not _shared_outbox_used_by_services(),
-    ),
-    Dormant(
         name="web-interaction 运行时",
         kind="deliberate",
         evidence="默认适配器是 UnavailableWebInteractionAdapter，生产必定 503",
@@ -110,18 +100,6 @@ DORMANT: tuple[Dormant, ...] = (
         still_dormant=lambda: (
             "return UnavailableWebInteractionAdapter()"
             in _read("app/application/services/web_interaction.py")
-        ),
-    ),
-    Dormant(
-        name="Celery 周期任务",
-        kind="deliberate",
-        evidence="Scheduler 是四个运行角色之一，但全仓无 beat_schedule 定义",
-        anchor_exists=lambda: _exists("app/bootstrap/scheduler.py"),
-        still_dormant=lambda: (
-            not any(
-                "beat_schedule" in p.read_text(encoding="utf-8")
-                for p in (ROOT / "app").rglob("*.py")
-            )
         ),
     ),
     Dormant(

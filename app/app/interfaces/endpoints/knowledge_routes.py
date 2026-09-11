@@ -11,7 +11,6 @@ from app.application.services import (
     knowledge_retrieval_service,
 )
 from app.domain.security import Principal
-from app.infrastructure.messaging.celery_producer import get_celery_producer
 from app.infrastructure.security.service_auth import (
     require_knowledge_ingest_service,
     require_knowledge_retrieve_service,
@@ -45,11 +44,10 @@ async def submit_ingestion(
     payload: KnowledgeIngestionCreate,
     session: AsyncSession = Depends(get_db_session),
 ):
-    job = await knowledge_ingestion_service.submit_ingestion(session, payload)
-    producer = get_celery_producer()
-    if job.status == "accepted" and producer.enabled:
-        producer.dispatch_knowledge_ingestion(job.id)
-    return job
+    try:
+        return await knowledge_ingestion_service.submit_ingestion(session, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @internal_router.post(
@@ -64,13 +62,12 @@ async def submit_internal_ingestion(
 ):
     # The service principal is verified by the dependency and recorded in the
     # accepted status journal; it is never accepted from the JSON payload.
-    job = await knowledge_ingestion_service.submit_ingestion(
-        session, payload, service_principal=service_principal
-    )
-    producer = get_celery_producer()
-    if job.status == "accepted" and producer.enabled:
-        producer.dispatch_knowledge_ingestion(job.id)
-    return job
+    try:
+        return await knowledge_ingestion_service.submit_ingestion(
+            session, payload, service_principal=service_principal
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @internal_router.post(
@@ -162,17 +159,8 @@ async def update_ingestion_status(
 async def dispatch_ingestion(
     ingestion_id: uuid.UUID, session: AsyncSession = Depends(get_db_session)
 ):
-    job = await knowledge_ingestion_service.get_ingestion_job(session, ingestion_id)
-    if job is None:
-        raise HTTPException(status_code=404, detail="ingestion job not found")
-
-    producer = get_celery_producer()
-    if producer.enabled:
-        producer.dispatch_knowledge_ingestion(ingestion_id)
-        return job
-
     try:
-        return await knowledge_ingestion_service.process_ingestion_job(
+        return await knowledge_ingestion_service.request_ingestion_job(
             session, ingestion_id=ingestion_id
         )
     except ValueError as exc:
@@ -198,14 +186,4 @@ async def retry_ingestion(
             raise HTTPException(status_code=404, detail=message) from exc
         raise HTTPException(status_code=409, detail=message) from exc
 
-    producer = get_celery_producer()
-    if producer.enabled:
-        producer.dispatch_knowledge_ingestion(ingestion_id)
-        return job
-
-    try:
-        return await knowledge_ingestion_service.process_ingestion_job(
-            session, ingestion_id=ingestion_id
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return job
