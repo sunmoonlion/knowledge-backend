@@ -13,6 +13,9 @@ depends_on = None
 
 
 def upgrade():
+    # Existing installations use core UUID defaults and may not have uuid-ossp.
+    # UUID v5 is required to preserve the provider operation identity exactly.
+    op.execute('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public')
     shared_upgrade()
     op.execute("""
         CREATE TABLE knowledge_provider_operation (
