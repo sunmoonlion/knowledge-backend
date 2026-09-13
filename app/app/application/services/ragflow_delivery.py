@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import uuid
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select, update
@@ -15,15 +17,23 @@ from app.application.services.ingestion_authorization import (
     require_job_binding,
     resolve_binding,
 )
+from app.application.services.ingestion_execution import (
+    VerifiedUpload,
+    assert_ingestion_current,
+    database_now,
+    execution_state,
+    save_execution,
+)
 from app.infrastructure.external.ragflow import (
     ArtifactContent,
     RAGFlowClient,
     RAGFlowError,
     RAGFlowIngestionResult,
+    RAGFlowParseCancelledError,
+    RAGFlowParseError,
     RAGFlowProtocolError,
     _maybe_int,
     _normalise_run,
-    _wait_for_document_parse,
     resolve_artifact_content,
 )
 from app.infrastructure.models.knowledge import (
@@ -69,6 +79,7 @@ async def operation(
 
 async def start(session: AsyncSession, key: str) -> bool:
     await assert_execution_current(session)
+    await assert_ingestion_current(session)
     claimed = (
         await session.execute(
             update(KnowledgeProviderOperation)
@@ -165,6 +176,7 @@ async def uploaded_document(
             )
         try:
             await assert_execution_current(session)
+            await assert_ingestion_current(session)
             matches = [await client.upload_document(dataset_id, artifact)]
         except RAGFlowError:
             await unknown(session, key)
@@ -293,102 +305,240 @@ async def recover_upload_receipt(
 
 async def ingest_with_receipts(
     session: AsyncSession, *, job: KnowledgeIngestionJob, settings: Settings
-) -> RAGFlowIngestionResult:
-    # Direct/old task entrypoints must not bypass the consumer fencing context.
+) -> RAGFlowIngestionResult | None:
+    """Prepare once, then perform a bounded single document query per poll message."""
     if "delivery_lease" not in session.info:
         raise RuntimeError("RAGFlow ingestion requires the durable consumer lease")
-    require_job_binding(job, settings)
+    binding = require_job_binding(job, settings)
+    state = execution_state(job)
     identity = upload_identity(job)
     key = f"upload:{identity}"
-    legacy = await session.get(KnowledgeProviderOperation, key)
-    if legacy is not None and legacy.state == "legacy_unknown":
+    row = await session.get(KnowledgeProviderOperation, key)
+    if row is not None and row.state == "legacy_unknown":
         raise RAGFlowOutcomeUnknown(
             "legacy running ingestion requires receipt investigation"
         )
-    artifact = await prepare_artifact(job, settings)
+
+    async def remaining() -> float | None:
+        if state.deadline is None:
+            return None
+        seconds = (state.deadline - await database_now(session)).total_seconds()
+        if seconds <= 0:
+            raise RAGFlowParseError("RAGFlow parse timed out")
+        return seconds
+
+    def read_failed(exc: RAGFlowError) -> None:
+        save_execution(job, state.model_copy(update={"read_error": type(exc).__name__}))
+
     client = RAGFlowClient(settings)
     try:
-        scope = await provider_scope(client, settings)
-        target = await dataset(
-            session, client, job.target_dataset or "", scope, settings
-        )
-        intent = upload_intent(job, scope, target["id"], artifact)
-        document = await uploaded_document(
-            session, client, key=key, intent=intent, artifact=artifact
-        )
-        generation = int((job.metadata_json or {}).get("retry_count") or 0)
-        parse_key = f"parse:{identity}:{generation}"
-        await operation(
-            session,
-            parse_key,
-            {"dataset_id": target["id"], "document_id": document["id"]},
-        )
-        current = await client.get_document(target["id"], document["id"])
-        run = _normalise_run(current.get("run"))
-        if run not in {"UNSTART", "FAIL", "CANCEL", "DONE", "RUNNING", "SCHEDULE"}:
-            raise RAGFlowOutcomeUnknown("unrecognised parse state")
-        if run not in {"DONE", "RUNNING", "SCHEDULE"}:
-            unfinished = (
-                await session.execute(
-                    select(KnowledgeProviderOperation.operation_key)
-                    .where(
-                        KnowledgeProviderOperation.operation_key.startswith(
-                            f"parse:{identity}:"
-                        ),
-                        KnowledgeProviderOperation.state.in_(["executing", "unknown"]),
-                    )
-                    .limit(1)
+        try:
+            async with asyncio.timeout(await remaining()):
+                scope = await provider_scope(client, settings)
+        except RAGFlowProtocolError:
+            raise
+        except RAGFlowError as exc:
+            if state.deadline is None:
+                raise
+            read_failed(exc)
+            return None
+
+        if state.upload is None:
+            artifact = await prepare_artifact(job, settings)
+            target = await dataset(
+                session, client, job.target_dataset or "", scope, settings
+            )
+            document = await uploaded_document(
+                session,
+                client,
+                key=key,
+                intent=upload_intent(job, scope, target["id"], artifact),
+                artifact=artifact,
+            )
+            upload = VerifiedUpload(
+                dataset_id=target["id"],
+                dataset_name=target["name"],
+                document_id=document["id"],
+                filename=artifact.filename,
+                sha256=hashlib.sha256(artifact.content).hexdigest(),
+                provider_scope=scope,
+            )
+            state = state.model_copy(update={"upload": upload})
+        else:
+            upload = state.upload
+            # A cursor is not a provider receipt: bind it back to the verified journal.
+            expected_receipt = upload.model_dump(
+                exclude={"dataset_name", "provider_scope"}
+            )
+            if (
+                row is None
+                or row.state != "confirmed"
+                or row.receipt != expected_receipt
+                or row.intent.get("provider_scope") != scope
+                or row.intent.get("source_app") != job.source_app
+                or row.intent.get("source_version")
+                != str(job.source_document_version_id)
+                or row.intent.get("artifact_refs") != job.source_artifact_refs
+                or row.intent.get("sha256") != upload.sha256
+                or row.intent.get("filename") != upload.filename
+                or row.intent.get("dataset_id") != upload.dataset_id
+            ):
+                raise RAGFlowProtocolError(
+                    "poll cursor conflicts with verified upload intent"
                 )
-            ).first()
-            if unfinished is not None:
-                raise RAGFlowOutcomeUnknown(
-                    "prior parse submission is still unconfirmed"
-                )
-            if not await start(session, parse_key):
-                raise RAGFlowOutcomeUnknown("parse outcome requires reconciliation")
+        if (
+            upload.dataset_id != binding.dataset_id
+            or upload.dataset_name != binding.dataset_name
+            or upload.provider_scope != scope
+        ):
+            raise RAGFlowProtocolError("poll provider or authorized binding changed")
+        if state.deadline is None:
+            state = state.model_copy(
+                update={
+                    "deadline": await database_now(session)
+                    + timedelta(seconds=settings.ragflow_parse_timeout_seconds),
+                    "interval": settings.ragflow_parse_poll_interval_seconds,
+                }
+            )
+        save_execution(job, state)
+        if job.ragflow_document_id != upload.document_id:
+            job.ragflow_document_id = upload.document_id
+        # Include the job as well as the retry generation; upload identity is shared
+        # across duplicate requests, whereas each accepted job owns its retry cursor.
+        parse_key = f"parse:{identity}:{job.id}:{state.generation}"
+        parse_intent = {
+            "dataset_id": upload.dataset_id,
+            "document_id": upload.document_id,
+        }
+
+        async def read_document() -> dict | None:
             try:
-                await assert_execution_current(session)
-                await client.parse_document(target["id"], document["id"])
+                async with asyncio.timeout(await remaining()):
+                    value = await client.get_document(
+                        upload.dataset_id, upload.document_id
+                    )
+            except RAGFlowProtocolError:
+                raise
+            except RAGFlowError as exc:
+                read_failed(exc)
+                return None
+            if (
+                value.get("id") != upload.document_id
+                or value.get("dataset_id") != upload.dataset_id
+                or value.get("name") != upload.filename
+            ):
+                raise RAGFlowProtocolError(
+                    "parse observation returned another document identity"
+                )
+            return value
+
+        if state.phase == "prepare":
+            # Persist the one deadline BEFORE a potentially ambiguous parse POST.
+            parse = await operation(session, parse_key, parse_intent)
+            current = await read_document()
+            if current is None:
+                return None
+            run = _normalise_run(current.get("run"))
+            if run not in {"UNSTART", "FAIL", "CANCEL", "DONE", "RUNNING", "SCHEDULE"}:
+                raise RAGFlowOutcomeUnknown("unrecognised parse state")
+            if run in {"UNSTART", "FAIL", "CANCEL"} and parse.state != "confirmed":
+                unfinished = (
+                    await session.execute(
+                        select(KnowledgeProviderOperation.operation_key)
+                        .where(
+                            KnowledgeProviderOperation.operation_key.startswith(
+                                f"parse:{identity}:"
+                            ),
+                            KnowledgeProviderOperation.state.in_(
+                                ["executing", "unknown"]
+                            ),
+                        )
+                        .limit(1)
+                    )
+                ).first()
+                if unfinished is not None:
+                    raise RAGFlowOutcomeUnknown(
+                        "prior parse submission is still unconfirmed"
+                    )
+                if not await start(session, parse_key):
+                    raise RAGFlowOutcomeUnknown("parse outcome requires reconciliation")
+                try:
+                    await assert_execution_current(session)
+                    await assert_ingestion_current(session)
+                    async with asyncio.timeout(await remaining()):
+                        await client.parse_document(
+                            upload.dataset_id, upload.document_id
+                        )
+                    await confirm(
+                        session,
+                        parse_key,
+                        {"document_id": upload.document_id, "submitted": True},
+                    )
+                except RAGFlowError:
+                    await unknown(session, parse_key)
+                    raise RAGFlowOutcomeUnknown(
+                        "parse outcome requires reconciliation"
+                    ) from None
+                state = state.model_copy(update={"phase": "poll"})
+                save_execution(job, state)
+                # The prepare message may observe an immediately completed parse.
+                # Subsequent poll messages never POST or enter this branch.
+                current = await read_document()
+                if current is None:
+                    return None
+            else:
                 await confirm(
                     session,
                     parse_key,
-                    {
-                        "document_id": document["id"],
-                        "submitted": True,
-                    },
+                    {"document_id": upload.document_id, "submitted": True},
                 )
-            except RAGFlowError:
-                await unknown(session, parse_key)
-                raise RAGFlowOutcomeUnknown(
-                    "parse outcome requires reconciliation"
-                ) from None
-        final = await _wait_for_document_parse(
-            client=client,
-            dataset_id=target["id"],
-            document_id=document["id"],
-            timeout_seconds=settings.ragflow_parse_timeout_seconds,
-            interval_seconds=settings.ragflow_parse_poll_interval_seconds,
-        )
-        await confirm(
-            session, parse_key, {"document_id": document["id"], "submitted": True}
-        )
+                state = state.model_copy(update={"phase": "poll"})
+                save_execution(job, state)
+        else:
+            parse = await session.get(KnowledgeProviderOperation, parse_key)
+            if (
+                parse is None
+                or parse.intent != parse_intent
+                or parse.state != "confirmed"
+                or parse.receipt
+                != {"document_id": upload.document_id, "submitted": True}
+            ):
+                raise RAGFlowOutcomeUnknown("poll requires a confirmed parse receipt")
+            current = await read_document()
+            if current is None:
+                return None
+
+        await remaining()  # A late response cannot extend the persisted deadline.
+        run = _normalise_run(current.get("run"))
+        state = state.model_copy(update={"last_run": run, "read_error": None})
+        save_execution(job, state)
+        if run == "FAIL":
+            raise RAGFlowParseError("RAGFlow parse failed")
+        if run == "CANCEL":
+            raise RAGFlowParseCancelledError("RAGFlow parse was cancelled")
+        if run in {"UNSTART", "RUNNING", "SCHEDULE"}:
+            return None
+        if run != "DONE":
+            raise RAGFlowOutcomeUnknown("unrecognised parse state")
         metadata: dict[str, Any] = {
-            "ragflow_dataset_id": target["id"],
-            "ragflow_dataset_name": target["name"],
-            "ragflow_document_name": artifact.filename,
-            "ragflow_parse_status": str(final.get("run") or ""),
-            "ragflow_chunk_count": _maybe_int(final.get("chunk_count")),
-            "ragflow_token_count": _maybe_int(final.get("token_count")),
+            "ragflow_dataset_id": upload.dataset_id,
+            "ragflow_dataset_name": upload.dataset_name,
+            "ragflow_document_name": upload.filename,
+            "ragflow_parse_status": run,
+            "ragflow_chunk_count": _maybe_int(current.get("chunk_count")),
+            "ragflow_token_count": _maybe_int(current.get("token_count")),
         }
         return RAGFlowIngestionResult(
-            target["id"],
-            target["name"],
-            document["id"],
-            artifact.filename,
-            str(final.get("run") or ""),
-            _maybe_int(final.get("chunk_count")),
-            _maybe_int(final.get("token_count")),
+            upload.dataset_id,
+            upload.dataset_name,
+            upload.document_id,
+            upload.filename,
+            run,
+            _maybe_int(current.get("chunk_count")),
+            _maybe_int(current.get("token_count")),
             metadata,
         )
+    except TimeoutError:
+        raise RAGFlowParseError("RAGFlow parse timed out") from None
     finally:
         await client.close()

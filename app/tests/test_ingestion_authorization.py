@@ -92,7 +92,10 @@ async def test_unknown_dataset_creates_no_job_command_or_provider_operation(db):
 @pytest.mark.parametrize(
     "path", ["/api/knowledge/ingestions", "/api/internal/v1/knowledge/ingestions"]
 )
-@pytest.mark.parametrize("key,expected", [("market-news", 202), ("unconfigured", 403)])
+@pytest.mark.parametrize(
+    "key,expected",
+    [("market-news", 202), ("unconfigured", 403), ("reserved-execution-metadata", 403)],
+)
 async def test_admin_and_internal_share_dataset_authorization(db, path, key, expected):
     app = FastAPI()
     app.include_router(router, prefix="/api")
@@ -118,6 +121,11 @@ async def test_admin_and_internal_share_dataset_authorization(db, path, key, exp
     app.dependency_overrides[get_db_session] = session
     app.dependency_overrides[require_knowledge_ingest_service] = lambda: principal
     request = payload().model_copy(update={"dataset_key": key})
+    if key == "reserved-execution-metadata":
+        from app.application.services.ingestion_execution import EXECUTION_KEY
+
+        request = payload()
+        request.document.metadata[EXECUTION_KEY] = {"generation": 42}
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url="http://test"
     ) as client:

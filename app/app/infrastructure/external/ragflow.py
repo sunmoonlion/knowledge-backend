@@ -369,6 +369,7 @@ async def _wait_for_document_parse(
     timeout_seconds: int,
     interval_seconds: float,
 ) -> dict[str, Any]:
+    """Legacy helper only; durable ingestion uses persisted single-query steps."""
     deadline = time.monotonic() + timeout_seconds
     last_doc: dict[str, Any] = {}
     while time.monotonic() <= deadline:
@@ -406,7 +407,7 @@ _RUN_ALIASES = {
 
 
 def _normalise_run(value: object) -> str:
-    run = str(value or "").strip().upper()
+    run = str(value if value is not None else "").strip().upper()
     return _RUN_ALIASES.get(run, run)
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -15,6 +15,15 @@ from app.application.services.ingestion_authorization import (
     SNAPSHOT_KEY,
     binding_snapshot,
     require_job_binding,
+)
+from app.application.services.ingestion_execution import (
+    EXECUTION_KEY,
+    EXECUTION_MARKER,
+    IngestionExecution,
+    database_now,
+    execution_state,
+    guard_generation,
+    save_execution,
 )
 from app.application.services.ragflow_delivery import (
     RAGFlowOutcomeUnknown,
@@ -89,9 +98,12 @@ async def submit_ingestion(
     service_principal: Principal | None = None,
 ) -> KnowledgeIngestionJob:
     idempotency_key = build_idempotency_key(payload)
+    if EXECUTION_KEY in payload.document.metadata:
+        raise ForbiddenError("document metadata cannot set ingestion execution state")
 
     accepted_metadata: dict[str, Any] = {
-        SNAPSHOT_KEY: binding_snapshot(get_settings(), payload.dataset_key)
+        SNAPSHOT_KEY: binding_snapshot(get_settings(), payload.dataset_key),
+        EXECUTION_KEY: EXECUTION_MARKER,
     }
     if service_principal is not None:
         accepted_metadata.update(
@@ -121,7 +133,10 @@ async def submit_ingestion(
         source_name=payload.document.source_name,
         content_hash=payload.document.content_hash,
         source_artifact_refs=[payload.artifact.model_dump(mode="json")],
-        metadata_json=payload.document.metadata,
+        metadata_json={
+            **payload.document.metadata,
+            EXECUTION_KEY: IngestionExecution().model_dump(mode="json"),
+        },
         payload=_payload_dict(payload, idempotency_key),
         status="accepted",
         status_history=[_status_entry("accepted", metadata=accepted_metadata)],
@@ -144,12 +159,12 @@ async def submit_ingestion(
 
 async def _enqueue_ingestion(session: AsyncSession, job: KnowledgeIngestionJob) -> None:
     require_job_binding(job, get_settings())
-    generation = int((job.metadata_json or {}).get("retry_count") or 0)
+    generation = execution_state(job).generation
     await enqueue_task(
         session,
         topic="knowledge.ingest.v1",
         key=str(upload_identity(job)),
-        payload={"ingestion_id": str(job.id)},
+        payload={"ingestion_id": str(job.id), "generation": generation, "step": 0},
         deduplication_key=f"knowledge:ingest:{job.id}:{generation}",
     )
 
@@ -162,6 +177,7 @@ async def request_ingestion_job(
             select(KnowledgeIngestionJob)
             .where(KnowledgeIngestionJob.id == ingestion_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if job is None:
@@ -183,9 +199,9 @@ async def get_ingestion_by_idempotency_key(
     session: AsyncSession, idempotency_key: str
 ) -> KnowledgeIngestionJob | None:
     result = await session.execute(
-        select(KnowledgeIngestionJob).where(
-            KnowledgeIngestionJob.idempotency_key == idempotency_key
-        )
+        select(KnowledgeIngestionJob)
+        .where(KnowledgeIngestionJob.idempotency_key == idempotency_key)
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one_or_none()
 
@@ -249,11 +265,14 @@ async def update_ingestion_status(
     metadata: dict,
     knowledge_document_id: str | None,
     ragflow_document_id: str | None,
+    commit: bool = True,
 ) -> KnowledgeIngestionJob:
-    if SNAPSHOT_KEY in metadata:
+    if SNAPSHOT_KEY in metadata or EXECUTION_KEY in metadata:
         # Admin status metadata must not manufacture an acceptance snapshot,
         # including for legacy jobs whose status_history is empty.
-        raise ForbiddenError("status updates cannot set an ingestion binding")
+        raise ForbiddenError(
+            "status updates cannot set an ingestion binding or execution state"
+        )
     job = await get_ingestion_job(session, ingestion_id)
     if job is None:
         raise ValueError(f"ingestion job not found: {ingestion_id}")
@@ -270,8 +289,9 @@ async def update_ingestion_status(
     if status in TERMINAL_STATUSES:
         job.completed_at = datetime.now(UTC)
 
-    await session.commit()
-    await session.refresh(job)
+    if commit:
+        await session.commit()
+        await session.refresh(job)
     return job
 
 
@@ -297,6 +317,7 @@ async def complete_ragflow_ingestion(
     *,
     job: KnowledgeIngestionJob,
     result: Any,
+    commit: bool = True,
 ) -> KnowledgeIngestionJob:
     """Commit the domain identity, provider binding and terminal job atomically."""
 
@@ -380,8 +401,9 @@ async def complete_ragflow_ingestion(
     job.knowledge_document_id = str(document_id)
     job.ragflow_document_id = result.document_id
     job.completed_at = now
-    await session.commit()
-    await session.refresh(job)
+    if commit:
+        await session.commit()
+        await session.refresh(job)
     return job
 
 
@@ -434,6 +456,7 @@ async def retry_ingestion_job(
             select(KnowledgeIngestionJob)
             .where(KnowledgeIngestionJob.id == ingestion_id)
             .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if job is None:
@@ -449,8 +472,11 @@ async def retry_ingestion_job(
         )
 
     metadata_json = dict(job.metadata_json or {})
-    retry_history = list(metadata_json.get("retry_history") or [])
-    retry_count = int(metadata_json.get("retry_count") or 0) + 1
+    # Legacy display metadata is client-extensible, not the execution authority.
+    stored_history = metadata_json.get("retry_history")
+    retry_history = list(stored_history) if isinstance(stored_history, list) else []
+    previous = execution_state(job)
+    retry_count = previous.generation + 1
     retry_entry = {
         "attempt": retry_count,
         "at": datetime.now(UTC).isoformat(),
@@ -482,6 +508,9 @@ async def retry_ingestion_job(
     job.completed_at = None
     job.status_history = history
     job.metadata_json = metadata_json
+    save_execution(
+        job, IngestionExecution(generation=retry_count, upload=previous.upload)
+    )
     await _enqueue_ingestion(session, job)
     await session.commit()
     await session.refresh(job)
@@ -522,28 +551,48 @@ def build_ragflow_success_metadata(
 
 
 async def process_ingestion_job(
-    session: AsyncSession, *, ingestion_id: uuid.UUID
+    session: AsyncSession, *, ingestion_id: uuid.UUID, generation: int, step: int
 ) -> KnowledgeIngestionJob:
+    if "delivery_lease" not in session.info:
+        raise RuntimeError("ingestion requires the durable consumer lease")
     job = await get_ingestion_job(session, ingestion_id)
     if job is None:
         raise ValueError(f"ingestion job not found: {ingestion_id}")
+    if (
+        session.info["delivery_lease"].resource_key
+        != f"knowledge.ingest.v1:{upload_identity(job)}"
+    ):
+        raise ValueError("ingestion command resource does not match the job")
     if job.status in TERMINAL_STATUSES:
         return job
+
+    state = execution_state(job)
+    if generation < state.generation or (
+        generation == state.generation and step < state.step
+    ):
+        return job  # Acknowledge obsolete messages, never mutate the current attempt.
+    if generation != state.generation or step != state.step:
+        raise ValueError("ingestion command is ahead of the persisted execution cursor")
+    guard_generation(session, job, generation)
 
     settings = get_settings()
     processor_name = (
         RAGFLOW_PROCESSOR_NAME if settings.ragflow_enabled else PROCESSOR_NAME
     )
     require_job_binding(job, settings)
-    job = await update_ingestion_status(
-        session,
-        ingestion_id=ingestion_id,
-        status="running",
-        last_error=None,
-        metadata={"processor": processor_name},
-        knowledge_document_id=None,
-        ragflow_document_id=None,
-    )
+    if state.upload is not None and not settings.ragflow_enabled:
+        raise ForbiddenError("active parse cannot switch to artifact-only execution")
+    if job.status != "running":
+        job = await update_ingestion_status(
+            session,
+            ingestion_id=ingestion_id,
+            status="running",
+            last_error=None,
+            metadata={"processor": processor_name},
+            knowledge_document_id=None,
+            ragflow_document_id=None,
+            commit=True,
+        )
 
     if settings.ragflow_enabled:
         try:
@@ -576,8 +625,13 @@ async def process_ingestion_job(
                 },
                 knowledge_document_id=None,
                 ragflow_document_id=None,
+                commit=False,
             )
-        return await complete_ragflow_ingestion(session, job=job, result=result)
+        if result is None:
+            return await _schedule_parse_poll(session, job)
+        return await complete_ragflow_ingestion(
+            session, job=job, result=result, commit=False
+        )
 
     try:
         artifact = await resolve_artifact_content(
@@ -598,6 +652,7 @@ async def process_ingestion_job(
             metadata={"processor": PROCESSOR_NAME, **failure_metadata},
             knowledge_document_id=None,
             ragflow_document_id=None,
+            commit=False,
         )
     return await update_ingestion_status(
         session,
@@ -611,4 +666,44 @@ async def process_ingestion_job(
         },
         knowledge_document_id=None,
         ragflow_document_id=None,
+        commit=False,
     )
+
+
+async def _schedule_parse_poll(session: AsyncSession, job: KnowledgeIngestionJob):
+    """Transport failures must propagate, not become acknowledged provider errors."""
+    state = execution_state(job)
+    now = await database_now(session)
+    if state.deadline is None:
+        raise RuntimeError("parse scheduling requires a persisted deadline")
+    if now >= state.deadline:
+        return await update_ingestion_status(
+            session,
+            ingestion_id=job.id,
+            status="ragflow_parse_failed",
+            last_error="RAGFlow parse timed out",
+            metadata={
+                "processor": RAGFLOW_PROCESSOR_NAME,
+                "error_type": "ragflow_parse_failed",
+            },
+            knowledge_document_id=None,
+            ragflow_document_id=None,
+            commit=False,
+        )
+    delay = min(60, state.interval * 2 ** min(state.step, 16))
+    when = min(state.deadline, now + timedelta(seconds=delay))
+    following = state.model_copy(update={"step": state.step + 1, "ready_at": when})
+    save_execution(job, following)
+    await enqueue_task(
+        session,
+        topic="knowledge.ingest.v1",
+        key=str(upload_identity(job)),
+        payload={
+            "ingestion_id": str(job.id),
+            "generation": state.generation,
+            "step": following.step,
+        },
+        deduplication_key=f"knowledge:poll:{job.id}:{state.generation}:{following.step}",
+        not_before=when,
+    )
+    return job  # Runtime commits cursor + successor + Inbox together.

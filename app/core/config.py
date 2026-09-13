@@ -153,10 +153,14 @@ class Settings(BaseSettings):
         default=None, validation_alias="RAGFLOW_API_KEY"
     )
     ragflow_parse_timeout_seconds: int = Field(
-        default=120, validation_alias="RAGFLOW_PARSE_TIMEOUT_SECONDS"
+        default=120, ge=1, le=86400, validation_alias="RAGFLOW_PARSE_TIMEOUT_SECONDS"
     )
     ragflow_parse_poll_interval_seconds: float = Field(
-        default=1.0, validation_alias="RAGFLOW_PARSE_POLL_INTERVAL_SECONDS"
+        default=1.0,
+        ge=0.1,
+        le=60,
+        allow_inf_nan=False,
+        validation_alias="RAGFLOW_PARSE_POLL_INTERVAL_SECONDS",
     )
     retrieval_dataset_allowlist: str = Field(
         default="default", validation_alias="RETRIEVAL_DATASET_ALLOWLIST"

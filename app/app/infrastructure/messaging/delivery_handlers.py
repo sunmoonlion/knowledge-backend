@@ -10,8 +10,19 @@ async def ingest(session, payload):
         process_ingestion_job,
     )
 
+    generation, step = payload.get("generation"), payload.get("step")
+    if (
+        type(generation) is not int
+        or type(step) is not int
+        or generation < 0
+        or step < 0
+    ):
+        raise ValueError("legacy or invalid ingestion command requires investigation")
     await process_ingestion_job(
-        session, ingestion_id=uuid.UUID(payload["ingestion_id"])
+        session,
+        ingestion_id=uuid.UUID(payload["ingestion_id"]),
+        generation=generation,
+        step=step,
     )
 
 
