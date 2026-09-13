@@ -9,6 +9,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from core.ingestion_policy import parse_bindings
+
 BrowserSurface = Literal["admin", "web"]
 
 
@@ -159,6 +161,9 @@ class Settings(BaseSettings):
     retrieval_dataset_allowlist: str = Field(
         default="default", validation_alias="RETRIEVAL_DATASET_ALLOWLIST"
     )
+    ingestion_dataset_bindings: str = Field(
+        default="{}", validation_alias="INGESTION_DATASET_BINDINGS"
+    )
     retrieval_default_tenant_id: str = Field(
         default="sunmoonai", validation_alias="RETRIEVAL_DEFAULT_TENANT_ID"
     )
@@ -222,6 +227,12 @@ class Settings(BaseSettings):
                 parts.fragment,
             )
         )
+
+    @field_validator("ingestion_dataset_bindings")
+    @classmethod
+    def validate_ingestion_bindings(cls, value: str) -> str:
+        parse_bindings(value)
+        return value
 
     @model_validator(mode="after")
     def validate_base_security(self) -> Settings:

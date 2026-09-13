@@ -11,6 +11,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.services.durable_tasks import assert_execution_current
+from app.application.services.ingestion_authorization import (
+    require_job_binding,
+    resolve_binding,
+)
 from app.infrastructure.external.ragflow import (
     ArtifactContent,
     RAGFlowClient,
@@ -108,31 +112,27 @@ async def unknown(session: AsyncSession, key: str) -> None:
 
 
 async def dataset(
-    session: AsyncSession, client: RAGFlowClient, name: str, scope: str
+    session: AsyncSession,
+    client: RAGFlowClient,
+    name: str,
+    scope: str,
+    settings: Settings,
 ) -> dict:
+    binding = resolve_binding(settings, name)
     key = f"dataset:{name}"
-    row = await operation(session, key, {"name": name, "provider_scope": scope})
-    matches = await client.find_datasets(name)
+    await operation(session, key, {"name": name, "provider_scope": scope})
+    matches = await client.find_datasets(binding.dataset_name)
     if len(matches) > 1:
         raise RAGFlowOutcomeUnknown("multiple datasets match the intended identity")
     if not matches:
-        if row.state == "confirmed" or not await start(session, key):
-            raise RAGFlowOutcomeUnknown(
-                "dataset creation outcome has no verified receipt"
-            )
-        try:
-            await assert_execution_current(session)
-            matches = [await client.create_dataset(name)]
-        except RAGFlowError:
-            await unknown(session, key)
-            raise RAGFlowOutcomeUnknown(
-                "dataset creation outcome requires reconciliation"
-            ) from None
+        raise RAGFlowProtocolError(
+            "configured dataset is not accessible; "
+            "provisioning is not a data-plane operation"
+        )
     result = matches[0]
     if (
-        result.get("name") != name
-        or not isinstance(result.get("id"), str)
-        or not result["id"]
+        result.get("name") != binding.dataset_name
+        or result.get("id") != binding.dataset_id
     ):
         raise RAGFlowProtocolError("dataset receipt does not match intended identity")
     await confirm(session, key, {"id": result["id"], "name": name})
@@ -261,12 +261,15 @@ async def recover_upload_receipt(
     document_id: str,
 ) -> dict:
     """Operator-selected receipt, verified using GETs only; no upload or parse."""
+    binding = require_job_binding(job, settings)
     key = f"upload:{upload_identity(job)}"
     row = await session.get(KnowledgeProviderOperation, key)
     if row is None or row.state == "legacy_unknown":
         raise RAGFlowOutcomeUnknown(
             "no stable upload intent; manual legacy investigation required"
         )
+    if row.intent.get("dataset_id") != binding.dataset_id:
+        raise RAGFlowProtocolError("recovery dataset differs from authorized binding")
     artifact = await prepare_artifact(job, settings)
     client = RAGFlowClient(settings)
     try:
@@ -294,6 +297,7 @@ async def ingest_with_receipts(
     # Direct/old task entrypoints must not bypass the consumer fencing context.
     if "delivery_lease" not in session.info:
         raise RuntimeError("RAGFlow ingestion requires the durable consumer lease")
+    require_job_binding(job, settings)
     identity = upload_identity(job)
     key = f"upload:{identity}"
     legacy = await session.get(KnowledgeProviderOperation, key)
@@ -305,7 +309,9 @@ async def ingest_with_receipts(
     client = RAGFlowClient(settings)
     try:
         scope = await provider_scope(client, settings)
-        target = await dataset(session, client, job.target_dataset or "default", scope)
+        target = await dataset(
+            session, client, job.target_dataset or "", scope, settings
+        )
         intent = upload_intent(job, scope, target["id"], artifact)
         document = await uploaded_document(
             session, client, key=key, intent=intent, artifact=artifact

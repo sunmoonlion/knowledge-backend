@@ -9,7 +9,13 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.dto.knowledge import KnowledgeIngestionCreate
+from app.application.errors.exceptions import ForbiddenError
 from app.application.services.durable_tasks import enqueue_task
+from app.application.services.ingestion_authorization import (
+    SNAPSHOT_KEY,
+    binding_snapshot,
+    require_job_binding,
+)
 from app.application.services.ragflow_delivery import (
     RAGFlowOutcomeUnknown,
     ingest_with_receipts,
@@ -84,20 +90,24 @@ async def submit_ingestion(
 ) -> KnowledgeIngestionJob:
     idempotency_key = build_idempotency_key(payload)
 
-    accepted_metadata: dict[str, Any] | None = None
+    accepted_metadata: dict[str, Any] = {
+        SNAPSHOT_KEY: binding_snapshot(get_settings(), payload.dataset_key)
+    }
     if service_principal is not None:
-        accepted_metadata = {
-            "service_principal": {
-                "actor_type": service_principal.actor_type,
-                "subject": service_principal.subject,
-                "issuer": service_principal.issuer,
-                "audience": service_principal.audience,
-                "app": service_principal.app,
-                "surface": service_principal.surface,
-                "scopes": sorted(service_principal.scopes),
-                "policy_version": service_principal.policy_version,
+        accepted_metadata.update(
+            {
+                "service_principal": {
+                    "actor_type": service_principal.actor_type,
+                    "subject": service_principal.subject,
+                    "issuer": service_principal.issuer,
+                    "audience": service_principal.audience,
+                    "app": service_principal.app,
+                    "surface": service_principal.surface,
+                    "scopes": sorted(service_principal.scopes),
+                    "policy_version": service_principal.policy_version,
+                }
             }
-        }
+        )
 
     statement = insert(KnowledgeIngestionJob).values(
         source_app=payload.source_app,
@@ -124,6 +134,7 @@ async def submit_ingestion(
         raise RuntimeError("ingestion acceptance did not persist")
     if job.payload != _payload_dict(payload, idempotency_key):
         raise ValueError("idempotency key already represents another ingestion intent")
+    require_job_binding(job, get_settings())
     if job.status not in TERMINAL_STATUSES:
         await _enqueue_ingestion(session, job)
     await session.commit()
@@ -132,6 +143,7 @@ async def submit_ingestion(
 
 
 async def _enqueue_ingestion(session: AsyncSession, job: KnowledgeIngestionJob) -> None:
+    require_job_binding(job, get_settings())
     generation = int((job.metadata_json or {}).get("retry_count") or 0)
     await enqueue_task(
         session,
@@ -238,6 +250,10 @@ async def update_ingestion_status(
     knowledge_document_id: str | None,
     ragflow_document_id: str | None,
 ) -> KnowledgeIngestionJob:
+    if SNAPSHOT_KEY in metadata:
+        # Admin status metadata must not manufacture an acceptance snapshot,
+        # including for legacy jobs whose status_history is empty.
+        raise ForbiddenError("status updates cannot set an ingestion binding")
     job = await get_ingestion_job(session, ingestion_id)
     if job is None:
         raise ValueError(f"ingestion job not found: {ingestion_id}")
@@ -286,6 +302,12 @@ async def complete_ragflow_ingestion(
 
     settings = get_settings()
     dataset_key = job.target_dataset or "default"
+    binding = require_job_binding(job, settings)
+    if (
+        result.dataset_id != binding.dataset_id
+        or result.dataset_name != binding.dataset_name
+    ):
+        raise ForbiddenError("provider result does not match ingestion binding")
     document_id = stable_knowledge_document_id(job)
     version_id = stable_knowledge_version_id(
         document_id, job.source_document_version_id
@@ -418,6 +440,7 @@ async def retry_ingestion_job(
         raise ValueError(f"ingestion job not found: {ingestion_id}")
     if job.status not in TERMINAL_STATUSES:
         raise ValueError(f"ingestion job is not terminal: {job.status}")
+    require_job_binding(job, get_settings())
     if job.status == "succeeded":
         raise ValueError("succeeded ingestion job cannot be retried")
     if job.status in RETRY_BLOCKED_STATUSES and not force:
@@ -511,6 +534,7 @@ async def process_ingestion_job(
     processor_name = (
         RAGFLOW_PROCESSOR_NAME if settings.ragflow_enabled else PROCESSOR_NAME
     )
+    require_job_binding(job, settings)
     job = await update_ingestion_status(
         session,
         ingestion_id=ingestion_id,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib.util
+import json
 import uuid
 from pathlib import Path
 
@@ -33,6 +34,26 @@ CONTENT = b"# durable knowledge"
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def authorized_settings(**kwargs):
+    return Settings(
+        INGESTION_DATASET_BINDINGS=json.dumps(
+            {
+                "market-news": {
+                    "dataset_id": "dataset-1",
+                    "dataset_name": "market-news",
+                },
+                "different": {"dataset_id": "dataset-2", "dataset_name": "different"},
+            }
+        ),
+        **kwargs,
+    )
+
+
+@pytest.fixture(autouse=True)
+def ingestion_policy(monkeypatch):
+    monkeypatch.setattr(service, "get_settings", authorized_settings)
+
+
 def payload():
     raw = _contract_payload()
     raw["artifact"]["sha256"] = hashlib.sha256(CONTENT).hexdigest()
@@ -49,7 +70,7 @@ async def submit(db, request=None):
 class Provider:
     def __init__(self, fault=None):
         self.fault = fault
-        self.datasets = []
+        self.datasets = [{"id": "dataset-1", "name": "market-news"}]
         self.documents = []
         self.creates = self.uploads = self.parses = 0
         self.hide_upload = False
@@ -115,7 +136,7 @@ class Provider:
 
 
 def configure(monkeypatch, fake):
-    settings = Settings(
+    settings = authorized_settings(
         RAGFLOW_API_BASE="https://provider.example.test",
         RAGFLOW_API_KEY="test-only",
         RAGFLOW_PARSE_TIMEOUT_SECONDS=1,
@@ -255,7 +276,7 @@ async def test_acceptance_and_command_roll_back_together(db, monkeypatch):
     assert await sql(db, "SELECT count(*) FROM knowledge_ingestion_job") == 0
 
 
-@pytest.mark.parametrize("fault", ["dataset", "upload", "parse"])
+@pytest.mark.parametrize("fault", ["upload", "parse"])
 async def test_response_loss_recovers_without_repeating_remote_write(
     db, monkeypatch, fault
 ):
@@ -269,7 +290,7 @@ async def test_response_loss_recovers_without_repeating_remote_write(
     assert await sql(db, "SELECT count(*) FROM inbox_message") == 0
     assert await runtime.consume(mid)
     assert not await runtime.consume(mid)
-    assert (fake.creates, fake.uploads, fake.parses) == (1, 1, 1)
+    assert (fake.creates, fake.uploads, fake.parses) == (0, 1, 1)
     assert await sql(db, "SELECT status FROM knowledge_ingestion_job") == "succeeded"
     assert await sql(db, "SELECT count(*) FROM knowledge_document_version") == 1
     assert (
@@ -309,9 +330,7 @@ async def test_new_retry_generation_cannot_bypass_unknown_parse(db, monkeypatch)
     fake.documents[0]["run"] = "UNSTART"
     with pytest.raises(ValueError, match="not terminal: reconciliation_required"):
         async with db() as session:
-            await service.retry_ingestion_job(
-                session, ingestion_id=job_id, force=True
-            )
+            await service.retry_ingestion_job(session, ingestion_id=job_id, force=True)
     # Even if an operator reclassifies the domain status, the independent
     # side-effect ledger must still prevent a duplicate parse submission.
     await sql(db, "UPDATE knowledge_ingestion_job SET status='failed'")
@@ -393,21 +412,18 @@ async def test_lost_upload_receipt_commit_is_recovered_without_reupload(
     assert fake.uploads == 1
 
 
-async def test_shared_dataset_has_one_creation_across_ingestions(db, monkeypatch):
-    fake = Provider("dataset")
+async def test_missing_dataset_is_not_created_by_ingestion(db, monkeypatch):
+    fake = Provider()
+    fake.datasets = []
     configure(monkeypatch, fake)
     await submit(db)
     runtime = DurableTasks(db, handlers=get_delivery_handlers())
-    with pytest.raises(provider.RAGFlowOutcomeUnknown):
-        await runtime.consume(await message(db))
-    async with db() as session:
-        result = await provider.dataset(
-            session,
-            fake,
-            "market-news",
-            hashlib.sha256(b"https://provider.example.test|test-tenant").hexdigest(),
-        )
-    assert result["id"] == "dataset-1" and fake.creates == 1
+    assert await runtime.consume(await message(db))
+    assert fake.creates == fake.uploads == fake.parses == 0
+    assert (
+        await sql(db, "SELECT status FROM knowledge_ingestion_job")
+        == "external_api_error"
+    )
 
 
 async def test_legacy_unknown_upload_is_blocked_before_provider_calls(db, monkeypatch):
@@ -462,17 +478,19 @@ async def test_expired_worker_cannot_write_receipt_after_replacement_completes(
         resume.set()
     with pytest.raises(DeliveryLeaseLost):
         await old
-    assert (fake.creates, fake.uploads, fake.parses) == (1, 1, 1)
+    assert (fake.creates, fake.uploads, fake.parses) == (0, 1, 1)
     assert await sql(db, "SELECT status FROM knowledge_ingestion_job") == "succeeded"
     assert await sql(db, "SELECT count(*) FROM inbox_message") == 1
 
 
-async def test_concurrent_dataset_requests_share_one_creation(db):
+async def test_concurrent_dataset_requests_only_confirm_existing_target(db):
     fake = Provider()
 
     async def request():
         async with db() as session:
-            return await provider.dataset(session, fake, "shared", "scope")
+            return await provider.dataset(
+                session, fake, "market-news", "scope", authorized_settings()
+            )
 
     results = await asyncio.gather(
         *(request() for _ in range(5)), return_exceptions=True
@@ -481,7 +499,7 @@ async def test_concurrent_dataset_requests_share_one_creation(db):
         isinstance(result, (dict, provider.RAGFlowOutcomeUnknown)) for result in results
     )
     assert (await request())["id"] == "dataset-1"
-    assert fake.creates == 1
+    assert fake.creates == 0
 
 
 async def test_retry_and_command_failure_restore_original_terminal_state(

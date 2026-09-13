@@ -161,23 +161,8 @@ class RAGFlowClient:
         raise RAGFlowProtocolError("dataset lookup exceeded reconciliation limit")
 
     async def create_dataset(self, name: str) -> dict[str, Any]:
-        data = await self._request(
-            "POST",
-            "/datasets",
-            json={
-                "name": name,
-                "chunk_method": "naive",
-                "permission": "me",
-            },
-        )
-        result = data.get("data")
-        if (
-            not isinstance(result, dict)
-            or result.get("name") != name
-            or not result.get("id")
-        ):
-            raise RAGFlowProtocolError("invalid dataset creation receipt")
-        return result
+        # Kept as a fail-closed compatibility entry, never an HTTP write.
+        raise RAGFlowProtocolError("dataset provisioning is disabled in the data plane")
 
     async def find_documents(
         self, dataset_id: str, filename: str
