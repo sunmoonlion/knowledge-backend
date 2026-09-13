@@ -20,6 +20,7 @@ from app.application.services.knowledge_ingestion_service import (
 from app.application.services.knowledge_retrieval_service import _assemble_response
 from app.domain.security import Principal
 from app.infrastructure.external.ragflow import RAGFlowClient, RAGFlowRetrievalResult
+from app.infrastructure.external.ragflow_provider import normalize_retrieval
 from app.interfaces.schemas.retrieval import (
     Citation,
     KnowledgeRetrievalRequest,
@@ -142,7 +143,9 @@ def test_response_drops_unmapped_provider_chunks_and_hides_provider_ids() -> Non
         total=2,
     )
 
-    response = _assemble_response(_request(), result, [cast(Any, _version())])
+    response = _assemble_response(
+        _request(), normalize_retrieval(result), [cast(Any, _version())]
+    )
     raw = response.model_dump(mode="json")
 
     assert len(response.evidence) == 1
@@ -170,7 +173,7 @@ def test_token_budget_is_enforced_and_marked_truncated() -> None:
 
     response = _assemble_response(
         _request(token_budget=4),
-        result,
+        normalize_retrieval(result),
         [cast(Any, _version())],
     )
 

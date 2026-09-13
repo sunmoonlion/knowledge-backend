@@ -12,6 +12,7 @@ import jsonschema
 import pytest
 from pydantic import ValidationError
 
+from app.application.ports.knowledge_provider import ArtifactError
 from app.application.services.knowledge_ingestion_service import (
     PROCESSOR_NAME,
     RAGFLOW_PROCESSOR_NAME,
@@ -21,6 +22,10 @@ from app.application.services.knowledge_ingestion_service import (
     classify_ingestion_error,
     get_ragflow_config_check,
 )
+from app.infrastructure.external.artifact_content import (
+    _s3_sigv4_headers,
+    resolve_artifact_content,
+)
 from app.infrastructure.external.ragflow import (
     ArtifactContent,
     RAGFlowClient,
@@ -28,11 +33,9 @@ from app.infrastructure.external.ragflow import (
     RAGFlowError,
     RAGFlowParseCancelledError,
     RAGFlowParseError,
-    _s3_sigv4_headers,
     _wait_for_document_parse,
     check_ragflow_config,
     ingest_into_ragflow,
-    resolve_artifact_content,
 )
 from app.infrastructure.messaging.celery_producer import CeleryProducer
 from app.interfaces.schemas.knowledge import KnowledgeIngestionCreate
@@ -84,7 +87,7 @@ def _patch_s3_http(monkeypatch, handler) -> None:
     transport = httpx.MockTransport(handler)
     real_async_client = httpx.AsyncClient
     monkeypatch.setattr(
-        "app.infrastructure.external.ragflow.httpx.AsyncClient",
+        "app.infrastructure.external.artifact_content.httpx.AsyncClient",
         lambda *args, **kwargs: real_async_client(transport=transport),
     )
 
@@ -256,7 +259,7 @@ async def test_resolve_artifact_content_verifies_version_size_type_and_hash(
 
 async def test_resolve_artifact_content_rejects_non_s3_and_disallowed_bucket() -> None:
     settings = Settings()
-    with pytest.raises(RAGFlowError, match="only accepts s3"):
+    with pytest.raises(ArtifactError, match="only accepts s3"):
         await resolve_artifact_content(
             settings=settings,
             source_artifact_refs=[{"uri": "https://example.com/doc"}],
@@ -268,7 +271,7 @@ async def test_resolve_artifact_content_rejects_non_s3_and_disallowed_bucket() -
 
     ref = _contract_payload()["artifact"]
     ref["uri"] = "s3://private-bucket/info/original/doc/clean.md"
-    with pytest.raises(RAGFlowError, match="bucket is not allowed"):
+    with pytest.raises(ArtifactError, match="bucket is not allowed"):
         await resolve_artifact_content(
             settings=settings,
             source_artifact_refs=[ref],
@@ -280,7 +283,7 @@ async def test_resolve_artifact_content_rejects_non_s3_and_disallowed_bucket() -
 
     ref = _contract_payload()["artifact"]
     ref["uri"] = "s3://development-info-originals/private/doc/clean.md"
-    with pytest.raises(RAGFlowError, match="outside the allowed prefixes"):
+    with pytest.raises(ArtifactError, match="outside the allowed prefixes"):
         await resolve_artifact_content(
             settings=settings,
             source_artifact_refs=[ref],
@@ -299,7 +302,7 @@ async def test_resolve_artifact_content_classifies_s3_access_failures(
         return httpx.Response(status_code, request=request)
 
     _patch_s3_http(monkeypatch, handler)
-    with pytest.raises(RAGFlowError, match=f"HTTP {status_code}"):
+    with pytest.raises(ArtifactError, match=f"HTTP {status_code}"):
         await resolve_artifact_content(
             settings=_s3_settings(),
             source_artifact_refs=[_contract_payload()["artifact"]],
@@ -343,7 +346,7 @@ async def test_resolve_artifact_content_rejects_version_and_hash_mismatch(
     ref = _contract_payload()["artifact"]
     ref["sha256"] = expected_hash
     ref["content_type"] = "text/markdown"
-    with pytest.raises(RAGFlowError, match=message):
+    with pytest.raises(ArtifactError, match=message):
         await resolve_artifact_content(
             settings=_s3_settings(),
             source_artifact_refs=[ref],
@@ -377,7 +380,7 @@ async def test_resolve_artifact_content_rejects_body_larger_than_declared(
     ref = _contract_payload()["artifact"]
     ref["sha256"] = hashlib.sha256(declared).hexdigest()
     ref["content_type"] = "text/markdown"
-    with pytest.raises(RAGFlowError, match="exceeded the declared artifact size"):
+    with pytest.raises(ArtifactError, match="exceeded the declared artifact size"):
         await resolve_artifact_content(
             settings=_s3_settings(),
             source_artifact_refs=[ref],

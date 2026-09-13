@@ -17,7 +17,7 @@ from test_knowledge_delivery_db import Provider, configure, message, payload, su
 from app.application.errors.exceptions import ForbiddenError
 from app.application.services import ingestion_execution as execution
 from app.application.services import knowledge_ingestion_service as service
-from app.application.services import ragflow_delivery as provider
+from app.application.services import provider_delivery as provider
 from app.application.services.durable_tasks import DurableTasks, enqueue_task
 from app.infrastructure.external.ragflow import RAGFlowError, _normalise_run
 from app.infrastructure.messaging.delivery_handlers import get_delivery_handlers
@@ -386,7 +386,7 @@ async def test_parse_submission_response_loss_keeps_deadline_and_upload_cursor(
     fake.fault = "parse"
     await submit(db)
     mid = await message(db)
-    with pytest.raises(provider.RAGFlowOutcomeUnknown):
+    with pytest.raises(provider.ProviderOutcomeUnknown):
         await runtime(db).consume(mid)
     before = await state(db)
     assert before.deadline is not None
@@ -618,7 +618,7 @@ sys.path.insert(0, 'tests')
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from test_knowledge_delivery_db import authorized_settings
 from app.application.services import knowledge_ingestion_service as service
-from app.application.services import ragflow_delivery as provider
+from app.application.services import provider_delivery as provider
 from app.application.services.durable_tasks import DurableTasks
 from app.infrastructure.messaging.delivery_handlers import get_delivery_handlers
 settings = authorized_settings(RAGFLOW_API_BASE='https://provider.example.test',
@@ -630,7 +630,8 @@ class Client:
         print('POLL_ENTERED', flush=True)
         await asyncio.Event().wait()
     async def close(self): pass
-provider.RAGFlowClient = lambda settings: Client()
+from app.infrastructure.external.ragflow_provider import RAGFlowProvider
+provider.create_provider = lambda settings: RAGFlowProvider(settings, client=Client())
 async def main():
     engine = create_async_engine(sys.argv[1],
         connect_args={'server_settings': {'search_path': sys.argv[2] + ',public'}})

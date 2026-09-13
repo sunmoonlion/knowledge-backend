@@ -24,7 +24,7 @@ from test_knowledge_delivery_db import (
 
 from app.application.errors.exceptions import ForbiddenError
 from app.application.services import knowledge_ingestion_service as service
-from app.application.services import ragflow_delivery as provider
+from app.application.services import provider_delivery as provider
 from app.application.services.durable_tasks import DurableTasks
 from app.application.services.ingestion_authorization import (
     SNAPSHOT_KEY,
@@ -277,7 +277,7 @@ async def test_recovery_cannot_access_artifact_after_policy_revocation(db, monke
     fake = Provider("upload")
     configure(monkeypatch, fake)
     job_id = await submit(db)
-    with pytest.raises(provider.RAGFlowOutcomeUnknown):
+    with pytest.raises(provider.ProviderOutcomeUnknown):
         await DurableTasks(db, handlers=get_delivery_handlers()).consume(
             await message(db)
         )
@@ -317,7 +317,9 @@ async def test_final_domain_binding_rejects_wrong_provider_id(db):
             await service.complete_ragflow_ingestion(
                 s,
                 job=job,
-                result=SimpleNamespace(dataset_id="wrong", dataset_name="market-news"),
+                result=SimpleNamespace(
+                    provider="ragflow", dataset_id="wrong", dataset_name="market-news"
+                ),
             )
     assert await sql(db, "SELECT count(*) FROM knowledge_document") == 0
 

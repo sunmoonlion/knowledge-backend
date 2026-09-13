@@ -10,6 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.dto.knowledge import KnowledgeIngestionCreate
 from app.application.errors.exceptions import ForbiddenError
+from app.application.ports.knowledge_provider import (
+    ProviderError,
+    ProviderIngestionResult,
+    ProviderParseCancelledError,
+    ProviderParseError,
+)
 from app.application.services.durable_tasks import enqueue_task
 from app.application.services.ingestion_authorization import (
     SNAPSHOT_KEY,
@@ -25,19 +31,15 @@ from app.application.services.ingestion_execution import (
     guard_generation,
     save_execution,
 )
-from app.application.services.ragflow_delivery import (
-    RAGFlowOutcomeUnknown,
+from app.application.services.provider_delivery import (
+    ProviderOutcomeUnknown,
     ingest_with_receipts,
     upload_identity,
 )
 from app.domain.security import Principal
-from app.infrastructure.external.ragflow import (
-    RAGFlowError,
-    RAGFlowParseCancelledError,
-    RAGFlowParseError,
-    check_ragflow_config,
-    resolve_artifact_content,
-)
+from app.infrastructure.external.artifact_content import resolve_artifact_content
+from app.infrastructure.external.knowledge_provider import provider_definition
+from app.infrastructure.external.ragflow import check_ragflow_config
 from app.infrastructure.models.knowledge import (
     KnowledgeDocument,
     KnowledgeDocumentVersion,
@@ -316,12 +318,19 @@ async def complete_ragflow_ingestion(
     session: AsyncSession,
     *,
     job: KnowledgeIngestionJob,
-    result: Any,
+    result: ProviderIngestionResult,
     commit: bool = True,
 ) -> KnowledgeIngestionJob:
     """Commit the domain identity, provider binding and terminal job atomically."""
 
     settings = get_settings()
+    definition = provider_definition(settings)
+    if result.provider != definition.name:
+        raise ForbiddenError("provider result does not match configured provider")
+    if definition.name != "ragflow":
+        raise ForbiddenError(
+            "legacy ingestion projection does not support this provider"
+        )
     dataset_key = job.target_dataset or "default"
     binding = require_job_binding(job, settings)
     if (
@@ -364,7 +373,7 @@ async def complete_ragflow_ingestion(
             source_name=job.source_name,
             access_scope=[f"tenant:{settings.retrieval_default_tenant_id}"],
             status="indexed",
-            provider="ragflow",
+            provider=definition.name,
             provider_dataset_id=result.dataset_id,
             provider_document_id=result.document_id,
             indexed_at=now,
@@ -379,7 +388,7 @@ async def complete_ragflow_ingestion(
                 "source_name": job.source_name,
                 "access_scope": [f"tenant:{settings.retrieval_default_tenant_id}"],
                 "status": "indexed",
-                "provider": "ragflow",
+                "provider": definition.name,
                 "provider_dataset_id": result.dataset_id,
                 "provider_document_id": result.document_id,
                 "indexed_at": now,
@@ -426,15 +435,15 @@ def classify_ingestion_error(exc: BaseException) -> tuple[str, dict[str, Any]]:
         return "artifact_unreadable", {"error_type": "artifact_unreadable"}
     if "no default embedding model" in message_lower:
         return "ragflow_config_error", {"error_type": "ragflow_config_error"}
-    if isinstance(exc, RAGFlowParseCancelledError):
+    if isinstance(exc, ProviderParseCancelledError):
         # 取消与失败同属可重试的 ragflow_parse_failed，但 error_type 区分开：
         # 取消多为运维动作或 RAGFlow 侧重启，排查方向与解析失败不同。
         return "ragflow_parse_failed", {"error_type": "ragflow_parse_cancelled"}
-    if isinstance(exc, RAGFlowParseError) or (
+    if isinstance(exc, ProviderParseError) or (
         "parse timed out" in message_lower or "parse failed" in message_lower
     ):
         return "ragflow_parse_failed", {"error_type": "ragflow_parse_failed"}
-    if isinstance(exc, RAGFlowError):
+    if isinstance(exc, ProviderError):
         return "external_api_error", {
             "error_type": "external_api_error",
             "system": "ragflow",
@@ -577,10 +586,12 @@ async def process_ingestion_job(
 
     settings = get_settings()
     processor_name = (
-        RAGFLOW_PROCESSOR_NAME if settings.ragflow_enabled else PROCESSOR_NAME
+        RAGFLOW_PROCESSOR_NAME
+        if provider_definition(settings).enabled
+        else PROCESSOR_NAME
     )
     require_job_binding(job, settings)
-    if state.upload is not None and not settings.ragflow_enabled:
+    if state.upload is not None and not provider_definition(settings).enabled:
         raise ForbiddenError("active parse cannot switch to artifact-only execution")
     if job.status != "running":
         job = await update_ingestion_status(
@@ -594,10 +605,10 @@ async def process_ingestion_job(
             commit=True,
         )
 
-    if settings.ragflow_enabled:
+    if provider_definition(settings).enabled:
         try:
             result = await ingest_with_receipts(session, job=job, settings=settings)
-        except RAGFlowOutcomeUnknown:
+        except ProviderOutcomeUnknown:
             await update_ingestion_status(
                 session,
                 ingestion_id=ingestion_id,
@@ -611,7 +622,7 @@ async def process_ingestion_job(
                 ragflow_document_id=None,
             )
             raise
-        except (RAGFlowError, OSError, ValueError) as exc:
+        except (ProviderError, OSError, ValueError) as exc:
             failure_status, failure_metadata = classify_ingestion_error(exc)
             return await update_ingestion_status(
                 session,
@@ -642,7 +653,7 @@ async def process_ingestion_job(
             metadata_json=dict(job.metadata_json or {}),
             source_document_version_id=str(job.source_document_version_id),
         )
-    except (RAGFlowError, OSError, ValueError) as exc:
+    except (ProviderError, OSError, ValueError) as exc:
         failure_status, failure_metadata = classify_ingestion_error(exc)
         return await update_ingestion_status(
             session,

@@ -13,7 +13,7 @@ import uuid
 
 from sqlalchemy import select
 
-from app.application.services.ragflow_delivery import (
+from app.application.services.provider_delivery import (
     recover_upload_receipt,
     upload_identity,
 )
@@ -45,7 +45,7 @@ async def run(args):
                 return {
                     "verified": True,
                     "ingestion_id": str(job.id),
-                    "document_id": document["id"],
+                    "document_id": document.id,
                     "replayed": False,
                 }
             identity = upload_identity(job)

@@ -18,10 +18,12 @@ from test_durable_delivery_db import sql
 from test_knowledge_ingestion import _contract_payload
 
 from app.application.dto.knowledge import KnowledgeIngestionCreate
+from app.application.ports.knowledge_provider import ProviderDataset, ProviderError
 from app.application.services import knowledge_ingestion_service as service
-from app.application.services import ragflow_delivery as provider
+from app.application.services import provider_delivery as provider
 from app.application.services.durable_tasks import DurableTasks
 from app.infrastructure.external.ragflow import ArtifactContent, RAGFlowError
+from app.infrastructure.external.ragflow_provider import RAGFlowProvider
 from app.infrastructure.messaging.delivery_handlers import get_delivery_handlers
 from app.infrastructure.messaging.durable_delivery import DeliveryLeaseLost
 from app.infrastructure.models.knowledge import (
@@ -142,7 +144,11 @@ def configure(monkeypatch, fake):
         RAGFLOW_PARSE_TIMEOUT_SECONDS=1,
     )
     monkeypatch.setattr(service, "get_settings", lambda: settings)
-    monkeypatch.setattr(provider, "RAGFlowClient", lambda settings: fake)
+    monkeypatch.setattr(
+        provider,
+        "create_provider",
+        lambda settings: RAGFlowProvider(settings, client=fake),
+    )
 
     async def artifact(**kwargs):
         return ArtifactContent("clean.md", CONTENT, "text/markdown")
@@ -175,7 +181,7 @@ async def test_operator_recovery_verifies_receipt_without_remote_writes(
     job_id = await submit(db)
     runtime = DurableTasks(db, handlers=get_delivery_handlers())
     mid = await message(db)
-    with pytest.raises(provider.RAGFlowOutcomeUnknown):
+    with pytest.raises(provider.ProviderOutcomeUnknown):
         await runtime.consume(mid)
     fake.hide_upload = True
     async with db() as session:
@@ -183,7 +189,7 @@ async def test_operator_recovery_verifies_receipt_without_remote_writes(
         document = await provider.recover_upload_receipt(
             session, job=job, settings=service.get_settings(), document_id="document-1"
         )
-    assert document["id"] == "document-1"
+    assert document.id == "document-1"
     assert fake.uploads == 1 and fake.parses == 0
     assert await sql(db, "SELECT count(*) FROM inbox_message") == 0
     assert (
@@ -203,14 +209,14 @@ async def test_operator_cannot_claim_an_unrelated_document(
     fake = Provider("upload")
     configure(monkeypatch, fake)
     job_id = await submit(db)
-    with pytest.raises(provider.RAGFlowOutcomeUnknown):
+    with pytest.raises(provider.ProviderOutcomeUnknown):
         await DurableTasks(db, handlers=get_delivery_handlers()).consume(
             await message(db)
         )
     fake.documents[0][field] = value
     async with db() as session:
         job = await service.get_ingestion_job(session, job_id)
-        with pytest.raises(RAGFlowError, match="source version and dataset"):
+        with pytest.raises(ProviderError, match="source version and dataset"):
             await provider.recover_upload_receipt(
                 session,
                 job=job,
@@ -285,7 +291,7 @@ async def test_response_loss_recovers_without_repeating_remote_write(
     await submit(db)
     runtime = DurableTasks(db, handlers=get_delivery_handlers())
     mid = await message(db)
-    with pytest.raises(provider.RAGFlowOutcomeUnknown):
+    with pytest.raises(provider.ProviderOutcomeUnknown):
         await runtime.consume(mid)
     assert await sql(db, "SELECT count(*) FROM inbox_message") == 0
     assert await runtime.consume(mid)
@@ -308,11 +314,11 @@ async def test_missing_unknown_receipt_never_triggers_another_upload(db, monkeyp
     await submit(db)
     runtime = DurableTasks(db, handlers=get_delivery_handlers())
     mid = await message(db)
-    with pytest.raises(provider.RAGFlowOutcomeUnknown):
+    with pytest.raises(provider.ProviderOutcomeUnknown):
         await runtime.consume(mid)
     fake.hide_upload = True
     for _ in range(3):
-        with pytest.raises(provider.RAGFlowOutcomeUnknown):
+        with pytest.raises(provider.ProviderOutcomeUnknown):
             await runtime.consume(mid)
     assert fake.uploads == 1
     assert await sql(db, "SELECT count(*) FROM inbox_message") == 0
@@ -323,7 +329,7 @@ async def test_new_retry_generation_cannot_bypass_unknown_parse(db, monkeypatch)
     configure(monkeypatch, fake)
     job_id = await submit(db)
     runtime = DurableTasks(db, handlers=get_delivery_handlers())
-    with pytest.raises(provider.RAGFlowOutcomeUnknown):
+    with pytest.raises(provider.ProviderOutcomeUnknown):
         await runtime.consume(await message(db))
     # A stale provider read and an explicit force retry are not proof that the
     # previous POST never executed. The old generation remains authoritative.
@@ -343,7 +349,7 @@ async def test_new_retry_generation_cannot_bypass_unknown_parse(db, monkeypatch)
         "SELECT id FROM outbox_message WHERE deduplication_key LIKE :pattern",
         pattern="%:1",
     )
-    with pytest.raises(provider.RAGFlowOutcomeUnknown, match="prior parse"):
+    with pytest.raises(provider.ProviderOutcomeUnknown, match="prior parse"):
         await runtime.consume(next_message)
     assert fake.parses == fake.uploads == 1
     assert await sql(db, "SELECT count(*) FROM inbox_message") == 0
@@ -441,7 +447,7 @@ async def test_legacy_unknown_upload_is_blocked_before_provider_calls(db, monkey
             )
         )
         await session.commit()
-    with pytest.raises(provider.RAGFlowOutcomeUnknown):
+    with pytest.raises(provider.ProviderOutcomeUnknown):
         await DurableTasks(db, handlers=get_delivery_handlers()).consume(
             await message(db)
         )
@@ -489,16 +495,21 @@ async def test_concurrent_dataset_requests_only_confirm_existing_target(db):
     async def request():
         async with db() as session:
             return await provider.dataset(
-                session, fake, "market-news", "scope", authorized_settings()
+                session,
+                RAGFlowProvider(authorized_settings(), client=fake),
+                "market-news",
+                "scope",
+                authorized_settings(),
             )
 
     results = await asyncio.gather(
         *(request() for _ in range(5)), return_exceptions=True
     )
     assert all(
-        isinstance(result, (dict, provider.RAGFlowOutcomeUnknown)) for result in results
+        isinstance(result, (ProviderDataset, provider.ProviderOutcomeUnknown))
+        for result in results
     )
-    assert (await request())["id"] == "dataset-1"
+    assert (await request()).id == "dataset-1"
     assert fake.creates == 0
 
 

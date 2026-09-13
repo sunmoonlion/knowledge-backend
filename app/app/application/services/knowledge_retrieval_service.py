@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from sqlalchemy import select
@@ -20,13 +19,17 @@ from app.application.errors.exceptions import (
     GatewayTimeoutError,
     ServiceUnavailableError,
 )
+from app.application.ports.knowledge_provider import (
+    ProviderChunk,
+    ProviderError,
+    ProviderProtocolError,
+    ProviderRetrievalResult,
+    ProviderTimeoutError,
+)
 from app.domain.security import Principal
-from app.infrastructure.external.ragflow import (
-    RAGFlowClient,
-    RAGFlowError,
-    RAGFlowProtocolError,
-    RAGFlowRetrievalResult,
-    RAGFlowTimeoutError,
+from app.infrastructure.external.knowledge_provider import (
+    create_provider,
+    provider_definition,
 )
 from app.infrastructure.models.knowledge import (
     KnowledgeDocument,
@@ -55,7 +58,10 @@ async def retrieve_knowledge(
     if settings.retrieval_auth_required_scope not in service_principal.scopes:
         raise ForbiddenError("retrieval service relation is not authorized")
 
-    versions = await _eligible_versions(session, payload)
+    definition = provider_definition(settings)
+    if definition.name != "ragflow":
+        raise ServiceUnavailableError("retrieval v1 does not support this provider")
+    versions = await _eligible_versions(session, payload, provider=definition.name)
     tenant_scope = f"tenant:{payload.security_context.tenant_id}"
     versions = [
         version
@@ -70,14 +76,14 @@ async def retrieve_knowledge(
             total_candidates=0,
             truncated=False,
         )
-    if not settings.ragflow_enabled:
+    if not definition.enabled:
         raise ServiceUnavailableError("knowledge retrieval provider is not configured")
 
     provider_dataset_ids = sorted({version.provider_dataset_id for version in versions})
     provider_document_ids = sorted(
         {version.provider_document_id for version in versions}
     )
-    client = RAGFlowClient(
+    client = create_provider(
         settings,
         timeout_seconds=settings.retrieval_provider_timeout_seconds,
     )
@@ -88,13 +94,13 @@ async def retrieve_knowledge(
             document_ids=provider_document_ids,
             top_k=payload.top_k,
         )
-    except RAGFlowTimeoutError as exc:
+    except ProviderTimeoutError as exc:
         raise GatewayTimeoutError("knowledge retrieval provider timed out") from exc
-    except RAGFlowProtocolError as exc:
+    except ProviderProtocolError as exc:
         raise BadGatewayError(
             "knowledge retrieval provider returned an invalid response"
         ) from exc
-    except RAGFlowError as exc:
+    except ProviderError as exc:
         raise ServiceUnavailableError(
             "knowledge retrieval provider is unavailable"
         ) from exc
@@ -107,6 +113,8 @@ async def retrieve_knowledge(
 async def _eligible_versions(
     session: AsyncSession,
     payload: KnowledgeRetrievalRequest,
+    *,
+    provider: str,
 ) -> list[KnowledgeDocumentVersion]:
     query = (
         select(KnowledgeDocumentVersion)
@@ -117,7 +125,7 @@ async def _eligible_versions(
         .where(
             KnowledgeDocument.status == "active",
             KnowledgeDocumentVersion.status == "indexed",
-            KnowledgeDocumentVersion.provider == "ragflow",
+            KnowledgeDocumentVersion.provider == provider,
             KnowledgeDocumentVersion.dataset_key.in_(payload.dataset_keys),
         )
     )
@@ -139,7 +147,7 @@ async def _eligible_versions(
 
 def _assemble_response(
     payload: KnowledgeRetrievalRequest,
-    result: RAGFlowRetrievalResult,
+    result: ProviderRetrievalResult,
     versions: list[KnowledgeDocumentVersion],
 ) -> KnowledgeRetrievalResponse:
     by_binding = {
@@ -147,10 +155,10 @@ def _assemble_response(
         for version in versions
     }
 
-    mapped: list[tuple[dict[str, Any], KnowledgeDocumentVersion]] = []
+    mapped: list[tuple[ProviderChunk, KnowledgeDocumentVersion]] = []
     for chunk in result.chunks:
-        provider_document_id = _text(chunk.get("document_id") or chunk.get("doc_id"))
-        provider_dataset_id = _text(chunk.get("dataset_id"))
+        provider_document_id = chunk.document_id
+        provider_dataset_id = chunk.dataset_id
         if not provider_document_id:
             continue
         version = by_binding.get((provider_dataset_id, provider_document_id))
@@ -163,7 +171,7 @@ def _assemble_response(
     for chunk, version in mapped:
         if len(evidence) >= payload.top_k or remaining_budget <= 0:
             break
-        content = _chunk_content(chunk)
+        content = chunk.content
         if not content:
             continue
         truncated = len(content) > remaining_budget
@@ -174,7 +182,7 @@ def _assemble_response(
         if token_estimate <= 0:
             continue
         remaining_budget -= token_estimate
-        provider_chunk_id = _text(chunk.get("id") or chunk.get("chunk_id"))
+        provider_chunk_id = chunk.id
         fingerprint = (
             provider_chunk_id or hashlib.sha256(content.encode("utf-8")).hexdigest()
         )
@@ -187,7 +195,7 @@ def _assemble_response(
                 knowledge_document_version_id=version.id,
                 chunk_id=chunk_id,
                 content=content,
-                score=_score(chunk.get("similarity", chunk.get("score"))),
+                score=chunk.score,
                 rank=len(evidence) + 1,
                 title=version.title,
                 source_uri=_safe_source_uri(version.source_uri),
@@ -198,8 +206,8 @@ def _assemble_response(
                 truncated=truncated,
                 access_scope=sorted(set(version.access_scope or [])),
                 provider_metadata=ProviderMetadata(
-                    term_similarity=_optional_score(chunk.get("term_similarity")),
-                    vector_similarity=_optional_score(chunk.get("vector_similarity")),
+                    term_similarity=chunk.term_similarity,
+                    vector_similarity=chunk.vector_similarity,
                 ),
             )
         )
@@ -215,28 +223,6 @@ def _assemble_response(
             or result.total > len(result.chunks)
         ),
     )
-
-
-def _chunk_content(chunk: dict[str, Any]) -> str:
-    value = chunk.get("content") or chunk.get("content_with_weight")
-    return value.strip() if isinstance(value, str) else ""
-
-
-def _text(value: Any) -> str:
-    return value if isinstance(value, str) else ""
-
-
-def _score(value: Any) -> float:
-    try:
-        return min(1.0, max(0.0, float(value)))
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _optional_score(value: Any) -> float | None:
-    if value is None:
-        return None
-    return _score(value)
 
 
 def _safe_source_uri(value: str | None) -> str | None:

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
-
 from app.application.errors.exceptions import ForbiddenError
+from app.infrastructure.external.knowledge_provider import provider_definition
 from app.infrastructure.models.knowledge import KnowledgeIngestionJob
 from core.config import Settings
 from core.ingestion_policy import DatasetBinding, parse_bindings
@@ -27,9 +26,7 @@ def binding_snapshot(settings: Settings, dataset_key: str | None) -> dict:
         "dataset_key": dataset_key,
         "dataset_id": binding.dataset_id,
         "dataset_name": binding.dataset_name,
-        "provider_base_sha256": hashlib.sha256(
-            (settings.ragflow_api_base or "").rstrip("/").encode()
-        ).hexdigest(),
+        "provider_base_sha256": provider_definition(settings).endpoint_fingerprint,
     }
 
 
