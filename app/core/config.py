@@ -128,6 +128,10 @@ class Settings(BaseSettings):
     celery_result_backend: str | None = Field(
         default=None, validation_alias="CELERY_RESULT_BACKEND"
     )
+    # Opt-in only after a privileged provisioner verifies the durable binding.
+    celery_task_topology_predeclared: bool = Field(
+        default=False, validation_alias="CELERY_TASK_TOPOLOGY_PREDECLARED"
+    )
 
     # Info -> Knowledge ingestion resource boundary.
     internal_auth_casdoor_application: str = "sunmoonai-info-knowledge-ingest"
