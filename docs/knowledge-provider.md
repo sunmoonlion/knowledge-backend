@@ -40,4 +40,5 @@ RAGFlow 客户端的结构边界；`tests/test_provider_port_db.py` 用非 RAGFl
 运行真实回执/Inbox，验证重放、未知上传恢复与 scope 变化拒绝。
 既有授权、投递、轮询、进程死亡、Artifact/检索契约测试继续执行，不能用假实现
 代替真实 Provider 联调。跨仓固定提交与实际回执在 k8s 的
-`sunmoonai/docs/knowledge-provider-decoupling-luna.md`。
+`sunmoonai/docs/legacy-backlog/verification-index.md` 的“Knowledge Provider 内部解耦”节；
+旧实施报告按该索引中的固定 Git 版本获取，不作为当前工作指令。
