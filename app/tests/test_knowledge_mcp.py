@@ -9,6 +9,8 @@ from pathlib import Path
 
 import httpx
 import pytest
+from joserfc import jwt as jose_jwt
+from joserfc.jwk import ECKey
 
 from app.application.services.dataset_query import DatasetQueryService, SqlRejected
 from app.bootstrap.mcp import create_mcp_app
@@ -256,3 +258,63 @@ async def test_batch_and_unknown_method(client):
     replies = r.json()
     assert isinstance(replies, list) and len(replies) == 2
     assert replies[1]["error"]["code"] == -32601
+
+
+# ---- D10：工作台签发的 JWT ----
+SIGNING_KEY = ECKey.generate_key("P-256")
+
+
+def mint(claims: dict, key: ECKey = SIGNING_KEY) -> str:
+    base = {
+        "iss": "wb-test",
+        "aud": "knowledge",
+        "sub": "u-jwt",
+        "sandbox": "u-jwt",
+        "exp": 4102444800,
+    }
+    return jose_jwt.encode({"alg": "ES256"}, {**base, **claims}, key)
+
+
+@pytest.fixture
+def jwt_settings(settings: Settings) -> Settings:
+    return settings.model_copy(
+        update={
+            "knowledge_mcp_jwt_public_key": SIGNING_KEY.as_pem(private=False).decode(),
+            "knowledge_mcp_jwt_issuer": "wb-test",
+        }
+    )
+
+
+@pytest.fixture
+async def jwt_client(jwt_settings: Settings):
+    app = create_mcp_app(jwt_settings)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://kb"
+    ) as c:
+        yield c
+
+
+async def test_jwt_grants_and_rejections(jwt_client):
+    ok = mint({})
+    r = await post(jwt_client, ok, rpc("tools/list"))
+    assert r.status_code == 200 and len(r.json()["result"]["tools"]) == 3
+    limited = mint({"tools": ["describe_schema", "not_a_tool"]})
+    r = await post(jwt_client, limited, rpc("tools/list"))
+    assert [t["name"] for t in r.json()["result"]["tools"]] == ["describe_schema"]
+    # 静态表在有公钥时仍然有效（两种共存）
+    assert (await post(jwt_client, TOKEN_FULL, rpc("tools/list"))).status_code == 200
+    for bad in (
+        mint({"aud": "relay"}),
+        mint({"iss": "someone-else"}),
+        mint({"exp": 1}),
+        mint({}, ECKey.generate_key("P-256")),
+        ok[:-4] + "AAAA",
+        mint({"tools": "run_sql"}),
+    ):
+        assert (await post(jwt_client, bad, rpc("tools/list"))).status_code == 401, bad[
+            :20
+        ]
+
+
+async def test_jwt_is_ignored_without_public_key(client):
+    assert (await post(client, mint({}), rpc("tools/list"))).status_code == 401

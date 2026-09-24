@@ -157,6 +157,9 @@ class Settings(BaseSettings):
     knowledge_dataset_object: str | None = None
     knowledge_dataset_sha256: str | None = None
     knowledge_mcp_tokens_json: str = "{}"
+    # D10：工作台签发的 ES256 JWT（aud=knowledge）用这把公钥就地验；未配置时只认静态表
+    knowledge_mcp_jwt_public_key: str | None = None
+    knowledge_mcp_jwt_issuer: str | None = None
     knowledge_mcp_rate_per_minute: int = 120
 
     ragflow_api_base: str | None = Field(

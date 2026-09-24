@@ -20,6 +20,9 @@ from typing import Any
 
 from fastapi import APIRouter, Header, Request, Response
 from fastapi.responses import JSONResponse
+from joserfc import jwt
+from joserfc.errors import JoseError
+from joserfc.jwk import ECKey
 
 from app.application.services.dataset_query import DatasetQueryService, SqlRejected
 from app.infrastructure.external.dataset_store import DatasetUnavailable, ensure_dataset
@@ -82,11 +85,19 @@ class TokenGrant:
 class TokenTable:
     """令牌 → 授权。
 
-    配置 JSON：{"<token>": {"user": "...", "sandbox": "...", "tools": [..]|null}}；
+    静态表 JSON：{"<token>": {"user": "...", "sandbox": "...", "tools": [..]|null}}；
     tools 为空即全部。
+    D10：配了工作台公钥时，三段式令牌按 ES256 JWT 验签（aud=knowledge、exp、可选 iss），
+    claims 里的 sub/sandbox/tools 就是授权；验不过不回退到静态表。
     """
 
-    def __init__(self, raw: str) -> None:
+    def __init__(
+        self,
+        raw: str,
+        *,
+        public_key_pem: str | None = None,
+        issuer: str | None = None,
+    ) -> None:
         self.grants: dict[str, TokenGrant] = {}
         for token, spec in (json.loads(raw or "{}") or {}).items():
             tools = spec.get("tools")
@@ -95,12 +106,44 @@ class TokenTable:
                 sandbox=str(spec.get("sandbox", "")),
                 tools=frozenset(tools) if tools else frozenset(ALL_TOOLS),
             )
+        self.public_key = ECKey.import_key(public_key_pem) if public_key_pem else None
+        self.issuer = issuer
 
     def resolve(self, authorization: str | None) -> TokenGrant | None:
         scheme, _, token = (authorization or "").partition(" ")
         if scheme.lower() != "bearer" or not token or " " in token:
             return None
+        if self.public_key is not None and token.count(".") == 2:
+            return self._resolve_jwt(token)
         return self.grants.get(token)
+
+    def _resolve_jwt(self, token: str) -> TokenGrant | None:
+        assert self.public_key is not None
+        try:
+            claims = jwt.decode(token, self.public_key, algorithms=["ES256"]).claims
+        except JoseError:
+            return None
+        if claims.get("aud") != "knowledge" or not claims.get("sub"):
+            return None
+        if self.issuer and claims.get("iss") != self.issuer:
+            return None
+        try:
+            if int(claims.get("exp", 0)) <= time.time():
+                return None
+        except (TypeError, ValueError):
+            return None
+        tools = claims.get("tools")
+        if tools is not None and not (
+            isinstance(tools, list) and all(isinstance(t, str) for t in tools)
+        ):
+            return None
+        return TokenGrant(
+            user=str(claims["sub"]),
+            sandbox=str(claims.get("sandbox", "")),
+            tools=frozenset(tools) & frozenset(ALL_TOOLS)
+            if tools
+            else frozenset(ALL_TOOLS),
+        )
 
 
 class RateLimiter:
@@ -122,7 +165,11 @@ class RateLimiter:
 class KnowledgeMcp:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.tokens = TokenTable(settings.knowledge_mcp_tokens_json)
+        self.tokens = TokenTable(
+            settings.knowledge_mcp_tokens_json,
+            public_key_pem=settings.knowledge_mcp_jwt_public_key,
+            issuer=settings.knowledge_mcp_jwt_issuer,
+        )
         self.limiter = RateLimiter(settings.knowledge_mcp_rate_per_minute)
         self.dataset = DatasetQueryService(
             Path(settings.knowledge_dataset_path),
