@@ -16,16 +16,18 @@ SHA = hashlib.sha256(BODY).hexdigest()
 
 
 def settings(tmp_path: Path, **extra) -> Settings:
-    return Settings(
-        _env_file=None,
-        knowledge_dataset_path=str(tmp_path / "ds" / "mini.sqlite"),
-        knowledge_dataset_object="s3://development-knowledge-datasets/lesson23/mini.sqlite",
-        knowledge_dataset_sha256=SHA,
-        S3_ENDPOINT="http://minio.test",
-        S3_ACCESS_KEY_ID="AKIA",
-        S3_SECRET_ACCESS_KEY="secret",
+    values = {
+        "knowledge_dataset_path": str(tmp_path / "ds" / "mini.sqlite"),
+        "knowledge_dataset_object": (
+            "s3://development-knowledge-datasets/lesson23/mini.sqlite"
+        ),
+        "knowledge_dataset_sha256": SHA,
+        "S3_ENDPOINT": "http://minio.test",
+        "S3_ACCESS_KEY_ID": "AKIA",
+        "S3_SECRET_ACCESS_KEY": "secret",
         **extra,
-    )
+    }
+    return Settings(_env_file=None, **values)
 
 
 def transport(body: bytes = BODY, status: int = 200, seen: list | None = None):
