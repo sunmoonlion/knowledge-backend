@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from fastapi import APIRouter, Header, Request, Response
 from fastapi.responses import JSONResponse
 
 from app.application.services.dataset_query import DatasetQueryService, SqlRejected
+from app.infrastructure.external.dataset_store import DatasetUnavailable, ensure_dataset
 from core.config import Settings, get_settings
 
 log = logging.getLogger(__name__)
@@ -119,6 +121,7 @@ class RateLimiter:
 
 class KnowledgeMcp:
     def __init__(self, settings: Settings) -> None:
+        self.settings = settings
         self.tokens = TokenTable(settings.knowledge_mcp_tokens_json)
         self.limiter = RateLimiter(settings.knowledge_mcp_rate_per_minute)
         self.dataset = DatasetQueryService(
@@ -126,6 +129,18 @@ class KnowledgeMcp:
             dataset_id=settings.knowledge_dataset_id,
         )
         self.anomalies: dict[str, int] = defaultdict(int)
+        self._dataset_lock = threading.Lock()
+        self._dataset_ready = False
+
+    def ensure_dataset(self) -> None:
+        """第一次用到时才取数据集（可能要从对象存储下载），进程内只做一次。"""
+        if self._dataset_ready:
+            return
+        with self._dataset_lock:
+            if self._dataset_ready:
+                return
+            ensure_dataset(self.settings)
+            self._dataset_ready = True
 
     # ---------------- JSON-RPC ----------------
     def handle(
@@ -187,6 +202,7 @@ class KnowledgeMcp:
             self.anomalies[grant.user] += 1
             return _tool_error(mid, "rate limit exceeded; retry later")
         try:
+            self.ensure_dataset()
             if name == "describe_schema":
                 result = self.dataset.describe_schema(args.get("table"))
             elif name == "metric_definitions":
@@ -197,8 +213,8 @@ class KnowledgeMcp:
                 )
         except SqlRejected as exc:
             return _tool_error(mid, str(exc))
-        except FileNotFoundError as exc:
-            log.error("knowledge_mcp_dataset_missing %s", exc)
+        except (FileNotFoundError, DatasetUnavailable) as exc:
+            log.error("knowledge_mcp_dataset_unavailable %s", exc)
             return _tool_error(mid, "dataset unavailable")
         text = json.dumps(result, ensure_ascii=False, default=str)
         return _ok(

@@ -153,6 +153,9 @@ class Settings(BaseSettings):
     # 知识 MCP（0006）：数据集与令牌表；第一期静态令牌（D10）
     knowledge_dataset_path: str = "datasets/lesson23_business_analysis.sqlite"
     knowledge_dataset_id: str = "lesson23-business-analysis"
+    # 本地没有文件时从对象存储取：s3://bucket/key，并按 sha256 钉版本（F-KNOW-07）
+    knowledge_dataset_object: str | None = None
+    knowledge_dataset_sha256: str | None = None
     knowledge_mcp_tokens_json: str = "{}"
     knowledge_mcp_rate_per_minute: int = 120
 
