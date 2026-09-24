@@ -19,13 +19,28 @@
     "buckets": [
       {
         "name": "development-info-originals",
-        "permissions": ["read"],
+        "permissions": [
+          "read"
+        ],
         "versioning": true,
         "objectLock": false
       },
       {
         "name": "development-knowledge-admin-assets",
-        "permissions": ["read", "write", "delete", "list"],
+        "permissions": [
+          "read",
+          "write",
+          "delete",
+          "list"
+        ],
+        "versioning": true,
+        "objectLock": false
+      },
+      {
+        "name": "development-knowledge-datasets",
+        "permissions": [
+          "read"
+        ],
         "versioning": true,
         "objectLock": false
       }
