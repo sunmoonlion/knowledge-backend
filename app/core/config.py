@@ -150,6 +150,12 @@ class Settings(BaseSettings):
     retrieval_auth_required_scope: str = "knowledge:retrieve"
 
     # Knowledge providers and upstream artifact policy.
+    # 知识 MCP（0006）：数据集与令牌表；第一期静态令牌（D10）
+    knowledge_dataset_path: str = "datasets/lesson23_business_analysis.sqlite"
+    knowledge_dataset_id: str = "lesson23-business-analysis"
+    knowledge_mcp_tokens_json: str = "{}"
+    knowledge_mcp_rate_per_minute: int = 120
+
     ragflow_api_base: str | None = Field(
         default=None, validation_alias="RAGFLOW_API_BASE"
     )

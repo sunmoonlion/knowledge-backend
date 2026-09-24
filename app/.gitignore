@@ -11,3 +11,5 @@ build/
 .env
 .env.*
 !.env.example
+*.sqlite
+*.sqlite-journal
