@@ -48,11 +48,20 @@ ALL_TOOLS: dict[str, dict[str, Any]] = {
     "metric_definitions": {
         "description": (
             "口径表：metric name, display name, source table, expression hint, "
-            "unit, time basis. Versioned with the dataset."
+            "unit, time basis. Versioned with the dataset. `metric` may be the "
+            "metric name or its display name (e.g. 净营收); exact match first, "
+            "then substring. Omit it to list all."
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"metric": {"type": "string"}},
+            "properties": {
+                "metric": {
+                    "type": "string",
+                    "description": (
+                        "metric_name or display_name, e.g. net_revenue_cents or 净营收"
+                    ),
+                }
+            },
             "additionalProperties": False,
         },
     },

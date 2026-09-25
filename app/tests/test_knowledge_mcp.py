@@ -318,3 +318,19 @@ async def test_jwt_grants_and_rejections(jwt_client):
 
 async def test_jwt_is_ignored_without_public_key(client):
     assert (await post(client, mint({}), rpc("tools/list"))).status_code == 401
+
+
+def test_metric_lookup_by_display_name_and_substring(dataset):
+    svc = DatasetQueryService(dataset, dataset_id="mini")
+    by_name = svc.metric_definitions("net_revenue_cents")["metrics"]
+    by_display = svc.metric_definitions("净营收")["metrics"]
+    assert [m["metric_name"] for m in by_name] == ["net_revenue_cents"]
+    assert by_display == by_name
+    assert [m["metric_name"] for m in svc.metric_definitions("营收")["metrics"]] == [
+        "net_revenue_cents"
+    ]
+    assert [
+        m["metric_name"] for m in svc.metric_definitions("NET_REVENUE")["metrics"]
+    ] == ["net_revenue_cents"]
+    assert svc.metric_definitions("毛利率")["metrics"] == []
+    assert len(svc.metric_definitions()["metrics"]) == 1

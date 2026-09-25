@@ -130,8 +130,27 @@ class DatasetQueryService:
                 raise SqlRejected("this dataset has no metric_dictionary") from exc
             rows = [dict(r) for r in cur.fetchall()]
         if metric is not None:
-            rows = [r for r in rows if str(r.get("metric_name")) == metric]
+            rows = self._match_metrics(rows, metric)
         return {"metrics": rows, "citation": self._citation(info)}
+
+    @staticmethod
+    def _match_metrics(rows: list[dict[str, Any]], metric: str) -> list[dict[str, Any]]:
+        """先按英文名或中文显示名精确匹配；都没有再按包含关系（不分大小写）找。
+
+        专家常用中文名问（如"净营收"），以前只认英文名、返回空，
+        只能把整本字典翻一遍（KIND 08 实测）。
+        """
+        key = metric.strip()
+        fields = ("metric_name", "display_name")
+        exact = [r for r in rows if any(str(r.get(f) or "") == key for f in fields)]
+        if exact:
+            return exact
+        low = key.lower()
+        return [
+            r
+            for r in rows
+            if low and any(low in str(r.get(f) or "").lower() for f in fields)
+        ]
 
     @classmethod
     def guard(cls, sql: str) -> str:
