@@ -112,13 +112,13 @@ async def test_with_the_switch_off_everything_is_as_before(default_dataset, tmp_
     assert not (tmp_path / "semantic").exists()
 
 
-async def test_with_the_switch_on_the_tools_are_the_same_and_say_the_dialect(
+async def test_with_the_switch_on_the_tools_say_the_dialect_and_one_is_added(
     default_dataset, tmp_path
 ):
     target = server(default_dataset, tmp_path, semantic=True)
     assert isinstance(target.dataset, SemanticDataset)
     listed = await tools(target)
-    assert set(listed) == set(ALL_TOOLS)
+    assert set(listed) == set(ALL_TOOLS) | {"query_metric"}
     assert listed["run_sql"]["description"].endswith(SEMANTIC_SQL_NOTE)
     assert listed["run_sql"]["inputSchema"] == ALL_TOOLS["run_sql"]["inputSchema"]
     assert "DuckDB" not in ALL_TOOLS["run_sql"]["description"]  # 公共的那份没被改

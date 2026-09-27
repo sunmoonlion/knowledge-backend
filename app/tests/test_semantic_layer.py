@@ -442,9 +442,10 @@ def test_the_dataset_describes_itself(financial):
 
 def test_metric_definitions_are_those_of_the_dataset(financial):
     old = DatasetQueryService(FINANCIAL, dataset_id="sh600009-financials")
-    assert (
-        financial.metric_definitions()["metrics"] == old.metric_definitions()["metrics"]
-    )
+    new = financial.metric_definitions()["metrics"]
+    # 语义层多给一项「能不能按名查询」；这份是第一版自述，都不能
+    assert [m.pop("queryable") for m in new] == [False] * 10
+    assert new == old.metric_definitions()["metrics"]
     found = financial.metric_definitions("毛利率")["metrics"]
     assert [m["metric_name"] for m in found] == ["gross_margin"]
     assert financial.metric_definitions("no such metric")["metrics"] == []

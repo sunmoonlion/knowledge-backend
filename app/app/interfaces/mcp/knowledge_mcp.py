@@ -119,6 +119,78 @@ ALL_TOOLS: dict[str, dict[str, Any]] = {
 }
 
 
+SEMANTIC_TOOLS: dict[str, dict[str, Any]] = {
+    "query_metric": {
+        "description": (
+            "Compute metrics BY NAME from their definitions in the dataset, one "
+            "result row per row of the metric's base table (for financial "
+            "statements: one company, one reporting period). Prefer this over "
+            "writing the formula yourself. Each metric comes back with value, unit, "
+            "applicable and reason: when applicable is false the metric must be "
+            "reported as not applicable with that reason, never as a number. "
+            "Call metric_definitions first: only metrics with queryable=true can be "
+            "used, and all metrics in one call must share the same base_table. "
+            "filters and order_by may use the key and label columns returned in "
+            "each row."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "dataset": _DATASET_ARG,
+                "metrics": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 10,
+                },
+                "filters": {
+                    "type": "array",
+                    "maxItems": 10,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "column": {"type": "string"},
+                            "op": {
+                                "type": "string",
+                                "enum": [
+                                    "eq",
+                                    "neq",
+                                    "gt",
+                                    "gte",
+                                    "lt",
+                                    "lte",
+                                    "in",
+                                    "not_in",
+                                ],
+                            },
+                            "value": {},
+                        },
+                        "required": ["column", "op", "value"],
+                        "additionalProperties": False,
+                    },
+                },
+                "order_by": {
+                    "type": "array",
+                    "maxItems": 5,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "by": {"type": "string"},
+                            "direction": {"type": "string", "enum": ["asc", "desc"]},
+                        },
+                        "required": ["by"],
+                        "additionalProperties": False,
+                    },
+                },
+                "max_rows": {"type": "integer", "minimum": 1, "maximum": 200},
+            },
+            "required": ["metrics"],
+            "additionalProperties": False,
+        },
+    },
+}
+# 令牌里写的工具名按这份清单认；实例对外给哪些，看语义层开没开
+KNOWN_TOOLS = frozenset(ALL_TOOLS) | frozenset(SEMANTIC_TOOLS)
 SEMANTIC_SQL_NOTE = (
     " The SQL dialect is DuckDB. Use table names alone (no schema or database "
     "prefix). Dates are stored as text in ISO format. Dividing two integers "
@@ -132,6 +204,7 @@ def tool_specs(*, semantic: bool) -> dict[str, dict[str, Any]]:
         return ALL_TOOLS
     tools = {name: dict(spec) for name, spec in ALL_TOOLS.items()}
     tools["run_sql"]["description"] += SEMANTIC_SQL_NOTE
+    tools.update(SEMANTIC_TOOLS)
     return tools
 
 
@@ -164,7 +237,7 @@ class TokenTable:
             self.grants[str(token)] = TokenGrant(
                 user=str(spec.get("user", "")),
                 sandbox=str(spec.get("sandbox", "")),
-                tools=frozenset(tools) if tools else frozenset(ALL_TOOLS),
+                tools=frozenset(tools) if tools else KNOWN_TOOLS,
             )
         self.public_key = ECKey.import_key(public_key_pem) if public_key_pem else None
         self.issuer = issuer
@@ -200,9 +273,7 @@ class TokenTable:
         return TokenGrant(
             user=str(claims["sub"]),
             sandbox=str(claims.get("sandbox", "")),
-            tools=frozenset(tools) & frozenset(ALL_TOOLS)
-            if tools
-            else frozenset(ALL_TOOLS),
+            tools=frozenset(tools) & KNOWN_TOOLS if tools else KNOWN_TOOLS,
         )
 
 
@@ -353,6 +424,15 @@ class KnowledgeMcp:
                 elif name == "metric_definitions":
                     result = await asyncio.to_thread(
                         dataset.metric_definitions, args.get("metric")
+                    )
+                elif name == "query_metric":
+                    # 只有语义层开着才有这个工具，此时数据集都是语义层的实现
+                    result = await asyncio.to_thread(
+                        dataset.query_metric,  # type: ignore[attr-defined]
+                        args.get("metrics"),
+                        filters=args.get("filters"),
+                        order_by=args.get("order_by"),
+                        max_rows=args.get("max_rows"),
                     )
                 else:
                     result = await asyncio.to_thread(

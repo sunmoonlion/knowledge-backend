@@ -139,3 +139,15 @@ class SemanticDataset:
 
     def run_sql(self, sql: str, *, max_rows: int | None = None) -> dict[str, Any]:
         return self._prepared().run_sql(sql, max_rows=max_rows)
+
+    def query_metric(
+        self,
+        metrics: Any,
+        *,
+        filters: Any = None,
+        order_by: Any = None,
+        max_rows: int | None = None,
+    ) -> dict[str, Any]:
+        return self._prepared().query_metric(
+            metrics, filters=filters, order_by=order_by, max_rows=max_rows
+        )

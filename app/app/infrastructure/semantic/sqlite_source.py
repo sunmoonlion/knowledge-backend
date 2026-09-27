@@ -12,6 +12,8 @@ from app.domain.semantic import (
     TEXT,
     ColumnSpec,
     DatasetDescription,
+    KeySpec,
+    LinkSpec,
     SemanticModelError,
     TableSpec,
 )
@@ -90,6 +92,36 @@ def read_description(path: Path) -> DatasetDescription:
             if "dataset_metadata" in names
             else {}
         )
-    description = DatasetDescription(tuple(tables), metrics, metadata)
+        links = (
+            tuple(
+                LinkSpec(
+                    name=str(r.get("link_name")),
+                    from_table=str(r.get("from_table")),
+                    to_table=str(r.get("to_table")),
+                    cardinality=str(r.get("cardinality")),
+                    on_columns=_names(r.get("on_columns")),
+                )
+                for r in _rows(conn, "table_links")
+            )
+            if "table_links" in names
+            else ()
+        )
+        keys = (
+            tuple(
+                KeySpec(
+                    table=str(r.get("table_name")),
+                    key_columns=_names(r.get("key_columns")),
+                    label_columns=_names(r.get("label_columns")),
+                )
+                for r in _rows(conn, "table_keys")
+            )
+            if "table_keys" in names
+            else ()
+        )
+    description = DatasetDescription(tuple(tables), metrics, metadata, links, keys)
     description.validate()
     return description
+
+
+def _names(value: Any) -> tuple[str, ...]:
+    return tuple(part.strip() for part in str(value or "").split(",") if part.strip())

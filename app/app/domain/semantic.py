@@ -52,13 +52,69 @@ class TableSpec:
 
 
 @dataclass(frozen=True)
+class LinkSpec:
+    """两张表的行怎么对上。on_columns 是两边同名的字段。"""
+
+    name: str
+    from_table: str
+    to_table: str
+    cardinality: str
+    on_columns: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class KeySpec:
+    """一张表的一行由哪些字段确定，再带哪些字段才看得懂这一行。"""
+
+    table: str
+    key_columns: tuple[str, ...]
+    label_columns: tuple[str, ...]
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return self.key_columns + self.label_columns
+
+
+@dataclass(frozen=True)
+class MetricSpec:
+    """一个可以按名查询的口径。表达式已经校验过，字段都带上了表名。"""
+
+    name: str
+    display_name: str
+    unit: str
+    description: str
+    base_table: str
+    value_sql: str
+    applicable_sql: str | None
+    reason_if_not: str | None
+    linked_tables: tuple[str, ...]
+    formula: str
+    applicable_when: str | None
+
+
+@dataclass(frozen=True)
 class DatasetDescription:
     tables: tuple[TableSpec, ...]
-    metrics: tuple[dict[str, object], ...] = ()
+    metrics: tuple[dict[str, object], ...] = ()  # 口径表的原样内容
     metadata: dict[str, str] = field(default_factory=dict)
+    links: tuple[LinkSpec, ...] = ()
+    keys: tuple[KeySpec, ...] = ()
 
     def table(self, name: str) -> TableSpec | None:
         return next((t for t in self.tables if t.name == name), None)
+
+    def key(self, table: str) -> KeySpec | None:
+        return next((k for k in self.keys if k.table == table), None)
+
+    def link(self, from_table: str, to_table: str) -> LinkSpec | None:
+        return next(
+            (
+                link
+                for link in self.links
+                if link.from_table == from_table and link.to_table == to_table
+            ),
+            None,
+        )
 
     def validate(self) -> None:
         if not self.tables:
@@ -94,3 +150,43 @@ class DatasetDescription:
                         f"column names differ only by case: {table.name}.{column.name}"
                     )
                 columns.add(column.name.lower())
+        self._validate_links_and_keys()
+
+    def _has(self, table: str, columns: tuple[str, ...]) -> bool:
+        spec = self.table(table)
+        return (
+            spec is not None
+            and bool(columns)
+            and all(spec.column(c) is not None for c in columns)
+        )
+
+    def _validate_links_and_keys(self) -> None:
+        for link in self.links:
+            if link.cardinality not in ("one_to_one", "many_to_one"):
+                raise SemanticModelError(f"unsupported link kind: {link.name}")
+            if link.from_table == link.to_table:
+                raise SemanticModelError(f"a table cannot link to itself: {link.name}")
+            for table in (link.from_table, link.to_table):
+                if not self._has(table, link.on_columns):
+                    raise SemanticModelError(
+                        f"link refers to a missing table or column: {link.name}"
+                    )
+        seen: set[tuple[str, str]] = set()
+        for link in self.links:
+            pair = (link.from_table, link.to_table)
+            if pair in seen:
+                raise SemanticModelError(f"two links between the same tables: {pair}")
+            seen.add(pair)
+        tables: set[str] = set()
+        for key in self.keys:
+            if key.table in tables:
+                raise SemanticModelError(f"two keys for one table: {key.table}")
+            tables.add(key.table)
+            if not self._has(key.table, key.key_columns) or (
+                key.label_columns and not self._has(key.table, key.label_columns)
+            ):
+                raise SemanticModelError(
+                    f"key refers to a missing table or column: {key.table}"
+                )
+            if len(set(key.columns)) != len(key.columns):
+                raise SemanticModelError(f"key lists a column twice: {key.table}")
