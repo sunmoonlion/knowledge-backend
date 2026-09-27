@@ -27,7 +27,11 @@ from joserfc import jwt
 from joserfc.errors import JoseError
 from joserfc.jwk import ECKey
 
-from app.application.services.dataset_catalog import DatasetCatalog, UnknownDataset
+from app.application.services.dataset_catalog import (
+    DatasetCatalog,
+    DatasetQueries,
+    UnknownDataset,
+)
 from app.application.services.dataset_query import DatasetQueryService, SqlRejected
 from app.infrastructure.external.dataset_store import (
     DatasetUnavailable,
@@ -35,6 +39,7 @@ from app.infrastructure.external.dataset_store import (
     ensure_dataset,
 )
 from app.infrastructure.repositories.dataset_registry import SqlDatasetRegistry
+from app.infrastructure.semantic import SemanticDataset
 from app.infrastructure.storage.postgres import get_postgres
 from core.config import Settings, get_settings
 
@@ -112,6 +117,22 @@ ALL_TOOLS: dict[str, dict[str, Any]] = {
         },
     },
 }
+
+
+SEMANTIC_SQL_NOTE = (
+    " The SQL dialect is DuckDB. Use table names alone (no schema or database "
+    "prefix). Dates are stored as text in ISO format. Dividing two integers "
+    "yields a decimal."
+)
+
+
+def tool_specs(*, semantic: bool) -> dict[str, dict[str, Any]]:
+    """这个实例对外的工具清单。语义层打开时，说明里写明方言。"""
+    if not semantic:
+        return ALL_TOOLS
+    tools = {name: dict(spec) for name, spec in ALL_TOOLS.items()}
+    tools["run_sql"]["description"] += SEMANTIC_SQL_NOTE
+    return tools
 
 
 @dataclass(frozen=True)
@@ -212,14 +233,29 @@ class KnowledgeMcp:
             issuer=settings.knowledge_mcp_jwt_issuer,
         )
         self.limiter = RateLimiter(settings.knowledge_mcp_rate_per_minute)
-        self.dataset = DatasetQueryService(
-            Path(settings.knowledge_dataset_path),
-            dataset_id=settings.knowledge_dataset_id,
-        )
+        self.semantic = settings.knowledge_semantic_engine_enabled
+        self.tools = tool_specs(semantic=self.semantic)
         self.anomalies: dict[str, int] = defaultdict(int)
         self._dataset_lock = threading.Lock()
         self._dataset_ready = False
+        self.dataset: DatasetQueries = self._open_dataset(
+            Path(settings.knowledge_dataset_path),
+            settings.knowledge_dataset_id,
+            ensure=self.ensure_dataset,
+        )
         self.catalog = catalog or self._default_catalog()
+
+    def _open_dataset(
+        self, path: Path, dataset_id: str, *, ensure: Any = None
+    ) -> DatasetQueries:
+        if not self.semantic:
+            return DatasetQueryService(path, dataset_id=dataset_id)
+        return SemanticDataset(
+            path,
+            dataset_id=dataset_id,
+            cache_dir=Path(self.settings.knowledge_semantic_cache_dir),
+            ensure=ensure,
+        )
 
     def _default_catalog(self) -> DatasetCatalog:
         enabled = self.settings.knowledge_dataset_registry_enabled
@@ -233,6 +269,7 @@ class KnowledgeMcp:
                 else None
             ),
             files=ObjectDatasetFiles(self.settings) if enabled else None,
+            open_dataset=self._open_dataset,
         )
 
     def ensure_dataset(self) -> None:
@@ -275,7 +312,7 @@ class KnowledgeMcp:
         if method == "tools/list":
             tools = [
                 {"name": name, **spec}
-                for name, spec in ALL_TOOLS.items()
+                for name, spec in self.tools.items()
                 if name in grant.tools
             ]
             return _ok(mid, {"tools": tools})
@@ -290,7 +327,7 @@ class KnowledgeMcp:
     ) -> dict[str, Any]:
         name = str(params.get("name") or "")
         args = params.get("arguments") or {}
-        if name not in ALL_TOOLS:
+        if name not in self.tools:
             return _err(mid, -32602, f"unknown tool: {name}")
         if name not in grant.tools:
             self.anomalies[grant.user] += 1

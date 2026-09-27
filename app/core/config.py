@@ -166,6 +166,10 @@ class Settings(BaseSettings):
     knowledge_dataset_registry_enabled: bool = False
     knowledge_dataset_allowed_buckets: str = ""
     knowledge_dataset_cache_dir: str = "/tmp/knowledge-datasets"  # noqa: S108
+    # 语义层（0009-semantic）：打开后，工具后面的检查、规划、执行走语义层；
+    # 关着时与以前完全一样。转换出的库放在缓存目录，按数据集文件的校验值命名。
+    knowledge_semantic_engine_enabled: bool = False
+    knowledge_semantic_cache_dir: str = "/tmp/knowledge-semantic"  # noqa: S108
 
     ragflow_api_base: str | None = Field(
         default=None, validation_alias="RAGFLOW_API_BASE"

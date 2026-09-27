@@ -10,9 +10,10 @@ import logging
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, Protocol
 
 from app.application.ports.datasets import DatasetFiles, DatasetRegistry
-from app.application.services.dataset_query import DatasetQueryService
+from app.application.services.dataset_query import DatasetInfo, DatasetQueryService
 from app.domain.datasets import RegisteredDataset
 
 log = logging.getLogger(__name__)
@@ -22,15 +23,34 @@ class UnknownDataset(LookupError):
     """没有这个数据集。消息可以直接给模型看。"""
 
 
+class DatasetQueries(Protocol):
+    """一个数据集能回答的问题。只读 SQLite 与语义层两种实现都满足它。"""
+
+    dataset_id: str
+
+    def info(self) -> DatasetInfo: ...
+
+    def describe_schema(self, table: str | None = None) -> dict[str, Any]: ...
+
+    def metric_definitions(self, metric: str | None = None) -> dict[str, Any]: ...
+
+    def run_sql(self, sql: str, *, max_rows: int | None = None) -> dict[str, Any]: ...
+
+
+def _sqlite_queries(path: Path, dataset_id: str) -> DatasetQueries:
+    return DatasetQueryService(path, dataset_id=dataset_id)
+
+
 class DatasetCatalog:
     def __init__(
         self,
         *,
-        default: DatasetQueryService,
+        default: DatasetQueries,
         ensure_default: Callable[[], None],
         default_title: str,
         registry: DatasetRegistry | None = None,
         files: DatasetFiles | None = None,
+        open_dataset: Callable[[Path, str], DatasetQueries] = _sqlite_queries,
         ttl_seconds: float = 30.0,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -41,11 +61,12 @@ class DatasetCatalog:
         self._default_title = default_title
         self._registry = registry
         self._files = files
+        self._open = open_dataset
         self._ttl = ttl_seconds
         self._now = monotonic
         self._known: dict[str, RegisteredDataset] = {}
         self._loaded_at: float | None = None
-        self._services: dict[tuple[str, str], DatasetQueryService] = {}
+        self._services: dict[tuple[str, str], DatasetQueries] = {}
         self._lock = asyncio.Lock()
 
     @property
@@ -70,7 +91,7 @@ class DatasetCatalog:
             for key in [k for k in self._services if k not in live]:
                 del self._services[key]  # 被新版本取代的旧版本不再提供查询
 
-    async def resolve(self, dataset_id: str | None) -> DatasetQueryService:
+    async def resolve(self, dataset_id: str | None) -> DatasetQueries:
         """按标识取查询服务。不给标识就是默认数据集。"""
         if dataset_id is None or dataset_id == self.default_id:
             await asyncio.to_thread(self._ensure_default)
@@ -87,7 +108,7 @@ class DatasetCatalog:
         service = self._services.get(key)
         if service is None:
             path: Path = await asyncio.to_thread(self._files.ensure, entry)
-            service = DatasetQueryService(path, dataset_id=entry.dataset_id)
+            service = self._open(path, entry.dataset_id)
             self._services[key] = service
         return service
 
