@@ -161,6 +161,11 @@ class Settings(BaseSettings):
     knowledge_mcp_jwt_public_key: str | None = None
     knowledge_mcp_jwt_issuer: str | None = None
     knowledge_mcp_rate_per_minute: int = 120
+    # 多数据集（0008-info 段三）：打开后，除默认数据集外还认登记表里的数据集。
+    # 登记的数据集只从下面列出的桶里取（逗号分隔），按 sha256 钉版，取到缓存目录。
+    knowledge_dataset_registry_enabled: bool = False
+    knowledge_dataset_allowed_buckets: str = ""
+    knowledge_dataset_cache_dir: str = "/tmp/knowledge-datasets"  # noqa: S108
 
     ragflow_api_base: str | None = Field(
         default=None, validation_alias="RAGFLOW_API_BASE"

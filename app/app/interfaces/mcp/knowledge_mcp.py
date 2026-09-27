@@ -4,11 +4,14 @@ Streamable HTTP，只用 JSON 响应，不开 SSE 流。
 - 鉴权：`Authorization: Bearer <token>`；令牌表来自配置（第一期静态，D10），
   每个令牌绑用户、沙箱与允许的工具清单；
 - `tools/list` 按令牌过滤；`tools/call` 越权即拒绝并计数（异常调用上报的最小形态）；
-- 限流：每令牌每分钟调用数封顶（进程内计数，第一期够用）。
+- 限流：每令牌每分钟调用数封顶（进程内计数，第一期够用）；
+- 多数据集（0008-info 段三）：三个查询工具可带 `dataset`，不带就是默认数据集；
+  `list_datasets` 列出现有数据集。没打开多数据集时只有默认数据集。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
@@ -24,15 +27,40 @@ from joserfc import jwt
 from joserfc.errors import JoseError
 from joserfc.jwk import ECKey
 
+from app.application.services.dataset_catalog import DatasetCatalog, UnknownDataset
 from app.application.services.dataset_query import DatasetQueryService, SqlRejected
-from app.infrastructure.external.dataset_store import DatasetUnavailable, ensure_dataset
+from app.infrastructure.external.dataset_store import (
+    DatasetUnavailable,
+    ObjectDatasetFiles,
+    ensure_dataset,
+)
+from app.infrastructure.repositories.dataset_registry import SqlDatasetRegistry
+from app.infrastructure.storage.postgres import get_postgres
 from core.config import Settings, get_settings
 
 log = logging.getLogger(__name__)
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
-SERVER_INFO = {"name": "sunmoon-knowledge", "version": "0.1.0"}
+SERVER_INFO = {"name": "sunmoon-knowledge", "version": "0.2.0"}
+_DATASET_ARG = {
+    "type": "string",
+    "description": (
+        "Dataset to use, as returned by list_datasets. Omit for the default dataset."
+    ),
+}
 ALL_TOOLS: dict[str, dict[str, Any]] = {
+    "list_datasets": {
+        "description": (
+            "List the datasets that can be queried: dataset, title, security_code, "
+            "data_version, start_date, end_date. A security that is not listed has "
+            "not been ingested; say so instead of guessing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+    },
     "describe_schema": {
         "description": (
             "List tables and columns of the dataset (optionally one table) with "
@@ -41,7 +69,7 @@ ALL_TOOLS: dict[str, dict[str, Any]] = {
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"table": {"type": "string"}},
+            "properties": {"table": {"type": "string"}, "dataset": _DATASET_ARG},
             "additionalProperties": False,
         },
     },
@@ -60,7 +88,8 @@ ALL_TOOLS: dict[str, dict[str, Any]] = {
                     "description": (
                         "metric_name or display_name, e.g. net_revenue_cents or 净营收"
                     ),
-                }
+                },
+                "dataset": _DATASET_ARG,
             },
             "additionalProperties": False,
         },
@@ -76,6 +105,7 @@ ALL_TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "sql": {"type": "string"},
                 "max_rows": {"type": "integer", "minimum": 1, "maximum": 200},
+                "dataset": _DATASET_ARG,
             },
             "required": ["sql"],
             "additionalProperties": False,
@@ -172,7 +202,9 @@ class RateLimiter:
 
 
 class KnowledgeMcp:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self, settings: Settings, catalog: DatasetCatalog | None = None
+    ) -> None:
         self.settings = settings
         self.tokens = TokenTable(
             settings.knowledge_mcp_tokens_json,
@@ -187,6 +219,21 @@ class KnowledgeMcp:
         self.anomalies: dict[str, int] = defaultdict(int)
         self._dataset_lock = threading.Lock()
         self._dataset_ready = False
+        self.catalog = catalog or self._default_catalog()
+
+    def _default_catalog(self) -> DatasetCatalog:
+        enabled = self.settings.knowledge_dataset_registry_enabled
+        return DatasetCatalog(
+            default=self.dataset,
+            ensure_default=self.ensure_dataset,
+            default_title=self.settings.knowledge_dataset_id,
+            registry=(
+                SqlDatasetRegistry(lambda: get_postgres().session_factory)
+                if enabled
+                else None
+            ),
+            files=ObjectDatasetFiles(self.settings) if enabled else None,
+        )
 
     def ensure_dataset(self) -> None:
         """第一次用到时才取数据集（可能要从对象存储下载），进程内只做一次。"""
@@ -199,7 +246,7 @@ class KnowledgeMcp:
             self._dataset_ready = True
 
     # ---------------- JSON-RPC ----------------
-    def handle(
+    async def handle(
         self, grant: TokenGrant, message: dict[str, Any]
     ) -> dict[str, Any] | None:
         method = message.get("method")
@@ -233,12 +280,12 @@ class KnowledgeMcp:
             ]
             return _ok(mid, {"tools": tools})
         if method == "tools/call":
-            return self._call(grant, mid, params)
+            return await self._call(grant, mid, params)
         if mid is None:
             return None
         return _err(mid, -32601, f"method not found: {method}")
 
-    def _call(
+    async def _call(
         self, grant: TokenGrant, mid: Any, params: dict[str, Any]
     ) -> dict[str, Any]:
         name = str(params.get("name") or "")
@@ -258,20 +305,32 @@ class KnowledgeMcp:
             self.anomalies[grant.user] += 1
             return _tool_error(mid, "rate limit exceeded; retry later")
         try:
-            self.ensure_dataset()
-            if name == "describe_schema":
-                result = self.dataset.describe_schema(args.get("table"))
-            elif name == "metric_definitions":
-                result = self.dataset.metric_definitions(args.get("metric"))
+            if name == "list_datasets":
+                result: dict[str, Any] = {"datasets": await self.catalog.describe()}
             else:
-                result = self.dataset.run_sql(
-                    str(args.get("sql") or ""), max_rows=args.get("max_rows")
-                )
-        except SqlRejected as exc:
+                dataset = await self.catalog.resolve(args.get("dataset"))
+                if name == "describe_schema":
+                    result = await asyncio.to_thread(
+                        dataset.describe_schema, args.get("table")
+                    )
+                elif name == "metric_definitions":
+                    result = await asyncio.to_thread(
+                        dataset.metric_definitions, args.get("metric")
+                    )
+                else:
+                    result = await asyncio.to_thread(
+                        dataset.run_sql,
+                        str(args.get("sql") or ""),
+                        max_rows=args.get("max_rows"),
+                    )
+        except (SqlRejected, UnknownDataset) as exc:
             return _tool_error(mid, str(exc))
         except (FileNotFoundError, DatasetUnavailable) as exc:
             log.error("knowledge_mcp_dataset_unavailable %s", exc)
             return _tool_error(mid, "dataset unavailable")
+        except Exception:  # 登记表查不了等：不把内部错误细节给模型
+            log.exception("knowledge_mcp_tool_failed tool=%s", name)
+            return _tool_error(mid, "dataset service is temporarily unavailable")
         text = json.dumps(result, ensure_ascii=False, default=str)
         return _ok(
             mid,
@@ -295,8 +354,10 @@ def _tool_error(mid: Any, message: str) -> dict[str, Any]:
     return _ok(mid, {"content": [{"type": "text", "text": message}], "isError": True})
 
 
-def build_router(settings: Settings | None = None) -> APIRouter:
-    server = KnowledgeMcp(settings or get_settings())
+def build_router(
+    settings: Settings | None = None, catalog: DatasetCatalog | None = None
+) -> APIRouter:
+    server = KnowledgeMcp(settings or get_settings(), catalog)
     router = APIRouter(prefix="/mcp/knowledge", tags=["Knowledge MCP"])
 
     @router.post("")
@@ -320,13 +381,12 @@ def build_router(settings: Settings | None = None) -> APIRouter:
         except ValueError:
             return JSONResponse(_err(None, -32700, "parse error"), status_code=400)
         messages = body if isinstance(body, list) else [body]
-        replies = [
-            r
-            for m in messages
-            if isinstance(m, dict)
-            for r in [server.handle(grant, m)]
-            if r is not None
-        ]
+        replies = []
+        for m in messages:
+            if isinstance(m, dict):
+                reply = await server.handle(grant, m)
+                if reply is not None:
+                    replies.append(reply)
         if not replies:
             return Response(status_code=202)
         payload: Any = replies if isinstance(body, list) else replies[0]

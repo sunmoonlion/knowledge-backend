@@ -49,6 +49,29 @@ def ensure_dataset(
         raise DatasetUnavailable(
             "dataset file missing and no dataset object configured"
         )
+    bucket, key = parse_object(settings.knowledge_dataset_object)
+    return fetch_pinned_object(
+        settings,
+        bucket=bucket,
+        key=key,
+        sha256=expected,
+        path=path,
+        transport=transport,
+    )
+
+
+def fetch_pinned_object(
+    settings: Settings,
+    *,
+    bucket: str,
+    key: str,
+    sha256: str,
+    path: Path,
+    version_id: str | None = None,
+    transport: httpx.BaseTransport | None = None,
+) -> Path:
+    """从对象存储取一个对象到 path，必须与给定的 sha256 一致，否则不留文件。"""
+    expected = sha256.lower()
     if not re.fullmatch(r"[a-f0-9]{64}", expected):
         raise DatasetUnavailable(
             "a pinned sha256 is required to fetch a dataset object"
@@ -59,7 +82,8 @@ def ensure_dataset(
         or not settings.s3_secret_access_key
     ):
         raise DatasetUnavailable("S3 credentials are not configured")
-    bucket, key = parse_object(settings.knowledge_dataset_object)
+    if ".." in key.split("/") or key.startswith("/") or not key:
+        raise DatasetUnavailable("dataset object key is invalid")
     endpoint = urlsplit(settings.s3_endpoint.rstrip("/"))
     if settings.s3_force_path_style:
         uri = "/" + "/".join(quote(p, safe="") for p in [bucket, *key.split("/")])
@@ -67,7 +91,8 @@ def ensure_dataset(
     else:
         uri = "/" + "/".join(quote(p, safe="") for p in key.split("/"))
         host = f"{bucket}.{endpoint.netloc}"
-    url = f"{endpoint.scheme}://{host}{uri}"
+    query = f"versionId={quote(version_id, safe='')}" if version_id else ""
+    url = f"{endpoint.scheme}://{host}{uri}" + (f"?{query}" if query else "")
     headers = _s3_sigv4_headers(
         method="GET",
         host=host,
@@ -75,6 +100,7 @@ def ensure_dataset(
         region=settings.s3_region,
         access_key=settings.s3_access_key_id,
         secret_key=settings.s3_secret_access_key,
+        **({"canonical_query": query} if query else {}),
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(path.name + ".partial")
@@ -108,6 +134,46 @@ def ensure_dataset(
         raise DatasetUnavailable("fetched dataset does not match the pinned sha256")
     os.replace(partial, path)
     return path
+
+
+class ObjectDatasetFiles:
+    """登记的数据集文件：按 sha256 放在缓存目录里，没有就取回。
+
+    文件名就是校验值，所以缓存里的文件要么不存在，要么是对的那一份；
+    已有文件用之前再核一次，被改动过就丢掉重取。
+    """
+
+    def __init__(
+        self, settings: Settings, transport: httpx.BaseTransport | None = None
+    ) -> None:
+        self._settings = settings
+        self._transport = transport
+
+    def ensure(self, dataset) -> Path:
+        allowed = {
+            b.strip()
+            for b in self._settings.knowledge_dataset_allowed_buckets.split(",")
+            if b.strip()
+        }
+        if dataset.bucket not in allowed:
+            raise DatasetUnavailable("dataset bucket is not allowed")
+        path = (
+            Path(self._settings.knowledge_dataset_cache_dir)
+            / f"{dataset.sha256}.sqlite"
+        )
+        if path.is_file():
+            if _sha256(path) == dataset.sha256:
+                return path
+            _discard(path)
+        return fetch_pinned_object(
+            self._settings,
+            bucket=dataset.bucket,
+            key=dataset.object_key,
+            sha256=dataset.sha256,
+            path=path,
+            version_id=dataset.object_version_id,
+            transport=self._transport,
+        )
 
 
 def _sha256(path: Path) -> str:

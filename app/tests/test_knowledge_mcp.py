@@ -112,6 +112,7 @@ async def test_initialize_and_notification(client):
 async def test_tools_list_is_filtered_by_token(client):
     r = await post(client, TOKEN_FULL, rpc("tools/list"))
     assert {t["name"] for t in r.json()["result"]["tools"]} == {
+        "list_datasets",
         "describe_schema",
         "metric_definitions",
         "run_sql",
@@ -297,7 +298,7 @@ async def jwt_client(jwt_settings: Settings):
 async def test_jwt_grants_and_rejections(jwt_client):
     ok = mint({})
     r = await post(jwt_client, ok, rpc("tools/list"))
-    assert r.status_code == 200 and len(r.json()["result"]["tools"]) == 3
+    assert r.status_code == 200 and len(r.json()["result"]["tools"]) == 4
     limited = mint({"tools": ["describe_schema", "not_a_tool"]})
     r = await post(jwt_client, limited, rpc("tools/list"))
     assert [t["name"] for t in r.json()["result"]["tools"]] == ["describe_schema"]
