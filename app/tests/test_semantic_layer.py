@@ -15,7 +15,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from app.application.services.dataset_query import DatasetQueryService, SqlRejected
+from app.application.services.dataset_query import SqlRejected
 from app.application.services.semantic_model import build_manifest
 from app.domain.semantic import (
     ColumnSpec,
@@ -23,6 +23,7 @@ from app.domain.semantic import (
     SemanticModelError,
     TableSpec,
 )
+from app.infrastructure.datasets import SqliteDatasetQueries
 from app.infrastructure.external.dataset_store import DatasetUnavailable
 from app.infrastructure.semantic import SemanticDataset
 from app.infrastructure.semantic.duckdb_store import (
@@ -441,7 +442,7 @@ def test_the_dataset_describes_itself(financial):
 
 
 def test_metric_definitions_are_those_of_the_dataset(financial):
-    old = DatasetQueryService(FINANCIAL, dataset_id="sh600009-financials")
+    old = SqliteDatasetQueries(FINANCIAL, dataset_id="sh600009-financials")
     new = financial.metric_definitions()["metrics"]
     # 语义层多给一项「能不能按名查询」；这份是第一版自述，都不能
     assert [m.pop("queryable") for m in new] == [False] * 10
@@ -464,7 +465,7 @@ def test_results_carry_the_same_citation_plus_the_engine(financial):
 
 
 def compare(dataset, source: Path, cases: list[dict[str, str]]) -> None:
-    old = DatasetQueryService(source, dataset_id=dataset.dataset_id)
+    old = SqliteDatasetQueries(source, dataset_id=dataset.dataset_id)
     for case in cases:
         label = f"{case['case_id']}/{case['query_id']}"
         expected = old.run_sql(case["sql"])

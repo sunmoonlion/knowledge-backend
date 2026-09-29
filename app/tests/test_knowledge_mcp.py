@@ -12,8 +12,9 @@ import pytest
 from joserfc import jwt as jose_jwt
 from joserfc.jwk import ECKey
 
-from app.application.services.dataset_query import DatasetQueryService, SqlRejected
+from app.application.services.dataset_query import SqlRejected
 from app.bootstrap.mcp import create_mcp_app
+from app.infrastructure.datasets import SqliteDatasetQueries
 from core.config import Settings
 
 TOKEN_FULL = "tok-full-0123456789abcdef"
@@ -195,7 +196,7 @@ async def test_run_sql_rejects_non_readonly(client, sql):
 
 
 def test_guard_blocks_writes_even_through_sqlite(dataset: Path):
-    svc = DatasetQueryService(dataset, dataset_id="mini")
+    svc = SqliteDatasetQueries(dataset, dataset_id="mini")
     with pytest.raises(SqlRejected):
         svc.guard("INSERT INTO order_performance VALUES (9999, 2024, 1)")
     # 即便绕过 guard，连接也是只读的
@@ -322,7 +323,7 @@ async def test_jwt_is_ignored_without_public_key(client):
 
 
 def test_metric_lookup_by_display_name_and_substring(dataset):
-    svc = DatasetQueryService(dataset, dataset_id="mini")
+    svc = SqliteDatasetQueries(dataset, dataset_id="mini")
     by_name = svc.metric_definitions("net_revenue_cents")["metrics"]
     by_display = svc.metric_definitions("净营收")["metrics"]
     assert [m["metric_name"] for m in by_name] == ["net_revenue_cents"]

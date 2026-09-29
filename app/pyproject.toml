@@ -98,7 +98,7 @@ forbidden_modules = [
 ignore_imports = [
     # 模板带来的（三个后端一样）：可靠投递的旧路径，只为部署目录里的集成测试留着。账本 H15。
     "app.application.services.durable_tasks -> app.infrastructure.messaging.durable_tasks",
-    # 本仓的（2026-09-13 之前）：入库、检索、投递。账本 A8。
+    # 本仓的（2026-09-13 之前）：入库、检索、投递。账本 A8，等集群迁移完成。
     "app.application.services.ingestion_authorization -> app.infrastructure.external.knowledge_provider",
     "app.application.services.ingestion_authorization -> app.infrastructure.models.knowledge",
     "app.application.services.ingestion_execution -> app.infrastructure.messaging.durable_delivery",
@@ -155,9 +155,7 @@ forbidden_modules = [
 allow_indirect_imports = true
 # 旧账的放行清单：只减不增，还掉一条删一条。
 ignore_imports = [
-    # 本仓的（2026-09-24）：数据集文件的查询实现放在了应用层。账本 H12。
-    "app.application.services.dataset_query -> sqlite3",
-    # 本仓的（2026-09-13 之前）：入库、检索、投递。账本 A8。
+    # 本仓的（2026-09-13 之前）：入库、检索、投递。账本 A8，等集群迁移完成。
     "app.application.services.ingestion_execution -> sqlalchemy",
     "app.application.services.knowledge_ingestion_service -> sqlalchemy",
     "app.application.services.knowledge_retrieval_service -> sqlalchemy",

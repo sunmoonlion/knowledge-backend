@@ -17,7 +17,7 @@ from test_knowledge_datasets import (
 )
 from test_knowledge_datasets import default_dataset as default_dataset
 
-from app.application.services.dataset_query import DatasetQueryService
+from app.infrastructure.datasets import SqliteDatasetQueries
 from app.infrastructure.semantic import SemanticDataset
 from app.interfaces.errors.exception_handlers import register_exception_handlers
 from app.interfaces.mcp.knowledge_mcp import (
@@ -74,7 +74,7 @@ def test_the_switch_is_off_by_default(default_dataset, tmp_path):
     settings = settings_for(default_dataset, tmp_path)
     assert settings.knowledge_semantic_engine_enabled is False
     target = KnowledgeMcp(settings)
-    assert isinstance(target.dataset, DatasetQueryService)
+    assert isinstance(target.dataset, SqliteDatasetQueries)
     assert target.tools is ALL_TOOLS
     assert tool_specs(semantic=False) is ALL_TOOLS
 

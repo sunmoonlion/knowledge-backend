@@ -32,7 +32,8 @@ from app.application.services.dataset_catalog import (
     DatasetQueries,
     UnknownDataset,
 )
-from app.application.services.dataset_query import DatasetQueryService, SqlRejected
+from app.application.services.dataset_query import SqlRejected
+from app.infrastructure.datasets import SqliteDatasetQueries
 from app.infrastructure.external.dataset_store import (
     DatasetUnavailable,
     ObjectDatasetFiles,
@@ -320,7 +321,7 @@ class KnowledgeMcp:
         self, path: Path, dataset_id: str, *, ensure: Any = None
     ) -> DatasetQueries:
         if not self.semantic:
-            return DatasetQueryService(path, dataset_id=dataset_id)
+            return SqliteDatasetQueries(path, dataset_id=dataset_id)
         return SemanticDataset(
             path,
             dataset_id=dataset_id,

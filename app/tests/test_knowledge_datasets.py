@@ -19,7 +19,6 @@ import pytest
 from fastapi import FastAPI
 
 from app.application.services.dataset_catalog import DatasetCatalog, UnknownDataset
-from app.application.services.dataset_query import DatasetQueryService
 from app.domain.datasets import (
     ACTIVE,
     DatasetRegistration,
@@ -28,6 +27,7 @@ from app.domain.datasets import (
     RegisteredDataset,
 )
 from app.domain.security import Principal
+from app.infrastructure.datasets import SqliteDatasetQueries
 from app.infrastructure.external.dataset_store import (
     DatasetUnavailable,
     ObjectDatasetFiles,
@@ -183,7 +183,7 @@ def settings_for(default_dataset: Path, tmp_path: Path, **changes) -> Settings:
 
 
 def catalog_for(settings: Settings, registry, files, clock=None) -> DatasetCatalog:
-    default = DatasetQueryService(
+    default = SqliteDatasetQueries(
         Path(settings.knowledge_dataset_path), dataset_id=settings.knowledge_dataset_id
     )
     extra = {"monotonic": clock} if clock else {}
@@ -193,6 +193,9 @@ def catalog_for(settings: Settings, registry, files, clock=None) -> DatasetCatal
         default_title="零售经营库",
         registry=registry,
         files=files,
+        open_dataset=lambda path, dataset_id: SqliteDatasetQueries(
+            path, dataset_id=dataset_id
+        ),
         **extra,
     )
 

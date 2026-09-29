@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app.application.ports.datasets import DatasetFiles, DatasetRegistry
-from app.application.services.dataset_query import DatasetInfo, DatasetQueryService
+from app.application.services.dataset_query import DatasetInfo
 from app.domain.datasets import RegisteredDataset
 
 log = logging.getLogger(__name__)
@@ -37,10 +37,6 @@ class DatasetQueries(Protocol):
     def run_sql(self, sql: str, *, max_rows: int | None = None) -> dict[str, Any]: ...
 
 
-def _sqlite_queries(path: Path, dataset_id: str) -> DatasetQueries:
-    return DatasetQueryService(path, dataset_id=dataset_id)
-
-
 class DatasetCatalog:
     def __init__(
         self,
@@ -50,12 +46,14 @@ class DatasetCatalog:
         default_title: str,
         registry: DatasetRegistry | None = None,
         files: DatasetFiles | None = None,
-        open_dataset: Callable[[Path, str], DatasetQueries] = _sqlite_queries,
+        open_dataset: Callable[[Path, str], DatasetQueries] | None = None,
         ttl_seconds: float = 30.0,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if (registry is None) != (files is None):
             raise ValueError("registry and files must be configured together")
+        if registry is not None and open_dataset is None:
+            raise ValueError("open_dataset is required when a registry is configured")
         self._default = default
         self._ensure_default = ensure_default
         self._default_title = default_title
@@ -100,7 +98,7 @@ class DatasetCatalog:
             raise UnknownDataset("dataset must be a non-empty string")
         await self._refresh()
         entry = self._known.get(dataset_id)
-        if entry is None or self._files is None:
+        if entry is None or self._files is None or self._open is None:
             raise UnknownDataset(
                 f"unknown dataset: {dataset_id}; call list_datasets to see what exists"
             )

@@ -15,8 +15,8 @@ from app.application.services import semantic_guard, semantic_metrics
 from app.application.services.dataset_query import (
     MAX_ROWS,
     DatasetInfo,
-    DatasetQueryService,
     SqlRejected,
+    match_metrics,
 )
 from app.domain.semantic import DatasetDescription
 
@@ -100,7 +100,7 @@ class SemanticQueryService:
         rows = [dict(r) for r in self._description.metrics]
         rows.sort(key=lambda r: str(r.get("metric_name")))
         if metric is not None:
-            rows = DatasetQueryService._match_metrics(rows, metric)
+            rows = match_metrics(rows, metric)
         for row in rows:
             # 以校验过的为准：数据集说可以查、但定义不合规的，这里是不可查
             row["queryable"] = str(row.get("metric_name")) in self._metrics
