@@ -26,6 +26,7 @@ dev = [
     "jsonschema>=4.26.0",
     "pyright>=1.1.400",
     "ruff",
+    "import-linter>=2.3",
 ]
 
 [tool.pytest.ini_options]
@@ -58,3 +59,118 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 
 [tool.ruff.lint.per-file-ignores]
 "app/interfaces/endpoints/**" = ["B008"]
+
+# 工程结构的自动检查。规则见 k8s 仓 `tree-build/SDD/architecture/engineering.md`「工程结构」。
+# 跑法：`uv run lint-imports`；`tests/test_layering.py` 也会跑它，所以分层没守住，`pytest` 就不过。
+# `ignore_imports` 是旧账的放行清单：还掉一条就删一条。清单里写的引用已经不存在时，检查会报错，逼着删。
+[tool.importlinter]
+root_packages = ["app", "core"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+id = "domain-imports-nothing-outside"
+name = "领域层不引用任何外层"
+type = "forbidden"
+source_modules = ["app.domain"]
+forbidden_modules = [
+    "app.application",
+    "app.infrastructure",
+    "app.interfaces",
+    "app.bootstrap",
+    "app.tasks",
+    "app.cli",
+    "core",
+]
+
+[[tool.importlinter.contracts]]
+id = "application-not-outer-layers"
+name = "应用层不引用基础设施层、接口层、组装层"
+type = "forbidden"
+source_modules = ["app.application"]
+forbidden_modules = [
+    "app.infrastructure",
+    "app.interfaces",
+    "app.bootstrap",
+    "app.tasks",
+    "app.cli",
+]
+# 旧账的放行清单：只减不增，还掉一条删一条。
+ignore_imports = [
+    # 模板带来的（三个后端一样）：登录服务、可靠投递。账本 A6。
+    "app.application.services.auth_service -> app.infrastructure.security",
+    "app.application.services.auth_service -> app.infrastructure.storage.postgres",
+    "app.application.services.auth_service -> app.infrastructure.storage.redis",
+    "app.application.services.durable_tasks -> app.infrastructure.messaging.delivery_schedule",
+    "app.application.services.durable_tasks -> app.infrastructure.messaging.durable_delivery",
+    "app.application.services.durable_tasks -> app.infrastructure.repositories.outbox",
+    # 本仓的（2026-09-13 之前）：入库、检索、投递。账本 A8。
+    "app.application.services.ingestion_authorization -> app.infrastructure.external.knowledge_provider",
+    "app.application.services.ingestion_authorization -> app.infrastructure.models.knowledge",
+    "app.application.services.ingestion_execution -> app.infrastructure.messaging.durable_delivery",
+    "app.application.services.ingestion_execution -> app.infrastructure.models.knowledge",
+    "app.application.services.knowledge_ingestion_service -> app.infrastructure.external.artifact_content",
+    "app.application.services.knowledge_ingestion_service -> app.infrastructure.external.knowledge_provider",
+    "app.application.services.knowledge_ingestion_service -> app.infrastructure.external.ragflow",
+    "app.application.services.knowledge_ingestion_service -> app.infrastructure.models.knowledge",
+    "app.application.services.knowledge_retrieval_service -> app.infrastructure.external.knowledge_provider",
+    "app.application.services.knowledge_retrieval_service -> app.infrastructure.models.knowledge",
+    "app.application.services.provider_delivery -> app.infrastructure.external.artifact_content",
+    "app.application.services.provider_delivery -> app.infrastructure.external.knowledge_provider",
+    "app.application.services.provider_delivery -> app.infrastructure.models.knowledge",
+]
+
+[[tool.importlinter.contracts]]
+id = "interface-surfaces-independent"
+name = "接口层的三个面互不引用"
+type = "independence"
+modules = [
+    "app.interfaces.http.admin",
+    "app.interfaces.http.web",
+    "app.interfaces.http.internal",
+]
+
+[[tool.importlinter.contracts]]
+id = "inner-layers-no-io-libraries"
+name = "应用层与领域层不直接引用数据库、网络、消息这类库"
+type = "forbidden"
+source_modules = ["app.application", "app.domain"]
+forbidden_modules = [
+    "sqlalchemy",
+    "asyncpg",
+    "psycopg",
+    "redis",
+    "celery",
+    "kombu",
+    "httpx",
+    "requests",
+    "aiohttp",
+    "websockets",
+    "fastapi",
+    "starlette",
+    "boto3",
+    "botocore",
+    "minio",
+    "elasticsearch",
+    "pymongo",
+    "neo4j",
+    "pika",
+    "aio_pika",
+    "sqlite3",
+]
+allow_indirect_imports = true
+# 旧账的放行清单：只减不增，还掉一条删一条。
+ignore_imports = [
+    # 模板带来的（三个后端一样）：登录服务、可靠投递。账本 A6。
+    "app.application.services.auth_service -> sqlalchemy",
+    "app.application.services.durable_tasks -> sqlalchemy",
+    # 模板带来的（三个后端一样）：outbox 端口的签名里有数据库会话；审计上下文读请求对象。账本 H8、H9。
+    "app.application.ports.outbox -> sqlalchemy",
+    "app.application.audit_context -> starlette",
+    # 本仓的（2026-09-24）：数据集文件的查询实现放在了应用层。账本 H12。
+    "app.application.services.dataset_query -> sqlite3",
+    # 本仓的（2026-09-13 之前）：入库、检索、投递。账本 A8。
+    "app.application.services.ingestion_execution -> sqlalchemy",
+    "app.application.services.knowledge_ingestion_service -> sqlalchemy",
+    "app.application.services.knowledge_retrieval_service -> sqlalchemy",
+    "app.application.services.provider_delivery -> sqlalchemy",
+]
