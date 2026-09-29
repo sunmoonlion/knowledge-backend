@@ -25,7 +25,6 @@ from test_knowledge_delivery_db import (
 from app.application.errors.exceptions import ForbiddenError
 from app.application.services import knowledge_ingestion_service as service
 from app.application.services import provider_delivery as provider
-from app.application.services.durable_tasks import DurableTasks
 from app.application.services.ingestion_authorization import (
     SNAPSHOT_KEY,
     binding_snapshot,
@@ -34,6 +33,7 @@ from app.application.services.ingestion_authorization import (
 )
 from app.infrastructure.external.ragflow import RAGFlowClient, RAGFlowProtocolError
 from app.infrastructure.messaging.delivery_handlers import get_delivery_handlers
+from app.infrastructure.messaging.durable_tasks import DurableTasks
 from app.infrastructure.models.knowledge import KnowledgeIngestionJob
 from app.infrastructure.security.service_auth import require_knowledge_ingest_service
 from app.infrastructure.storage.postgres import get_db_session

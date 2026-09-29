@@ -18,10 +18,10 @@ from app.application.errors.exceptions import ForbiddenError
 from app.application.services import ingestion_execution as execution
 from app.application.services import knowledge_ingestion_service as service
 from app.application.services import provider_delivery as provider
-from app.application.services.durable_tasks import DurableTasks, enqueue_task
 from app.infrastructure.external.ragflow import RAGFlowError, _normalise_run
 from app.infrastructure.messaging.delivery_handlers import get_delivery_handlers
 from app.infrastructure.messaging.durable_delivery import DeliveryLeaseLost
+from app.infrastructure.messaging.durable_tasks import DurableTasks, enqueue_task
 from app.tasks.durable_delivery import pump
 from core.config import Settings
 
@@ -619,7 +619,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from test_knowledge_delivery_db import authorized_settings
 from app.application.services import knowledge_ingestion_service as service
 from app.application.services import provider_delivery as provider
-from app.application.services.durable_tasks import DurableTasks
+from app.infrastructure.messaging.durable_tasks import DurableTasks
 from app.infrastructure.messaging.delivery_handlers import get_delivery_handlers
 settings = authorized_settings(RAGFLOW_API_BASE='https://provider.example.test',
     RAGFLOW_API_KEY='test-only', RAGFLOW_PARSE_TIMEOUT_SECONDS=120)

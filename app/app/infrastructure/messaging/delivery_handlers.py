@@ -2,7 +2,7 @@
 
 import uuid
 
-from app.application.services.durable_tasks import Handler
+from app.infrastructure.messaging.durable_tasks import Handler
 
 
 async def ingest(session, payload):

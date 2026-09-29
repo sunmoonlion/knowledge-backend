@@ -26,8 +26,8 @@ from app.application.ports.knowledge_provider import (
 )
 from app.application.services import knowledge_ingestion_service as service
 from app.application.services import provider_delivery as delivery
-from app.application.services.durable_tasks import DurableTasks
 from app.application.services.ingestion_execution import guard_generation
+from app.infrastructure.messaging.durable_tasks import DurableTasks
 from app.infrastructure.models.knowledge import KnowledgeIngestionJob
 
 

@@ -21,11 +21,11 @@ from app.application.dto.knowledge import KnowledgeIngestionCreate
 from app.application.ports.knowledge_provider import ProviderDataset, ProviderError
 from app.application.services import knowledge_ingestion_service as service
 from app.application.services import provider_delivery as provider
-from app.application.services.durable_tasks import DurableTasks
 from app.infrastructure.external.ragflow import ArtifactContent, RAGFlowError
 from app.infrastructure.external.ragflow_provider import RAGFlowProvider
 from app.infrastructure.messaging.delivery_handlers import get_delivery_handlers
 from app.infrastructure.messaging.durable_delivery import DeliveryLeaseLost
+from app.infrastructure.messaging.durable_tasks import DurableTasks
 from app.infrastructure.models.knowledge import (
     KnowledgeIngestionJob,
     KnowledgeProviderOperation,
