@@ -27,7 +27,6 @@ from typing import Any
 import httpx
 from fastapi import FastAPI
 from preview_recorder import Recorder
-from sqlalchemy.ext.asyncio import async_sessionmaker
 from test_auth_routes_security import session
 from test_durable_delivery_db import db as db  # noqa: F401
 from test_knowledge_datasets import BUCKET, MemoryRegistry, registered, registration
@@ -314,7 +313,7 @@ async def test_the_registry_for_the_admin_pages(db, default_dataset, tmp_path): 
 
     管理端还没有预览（账本 H46），这些样例先用来核对管理端手写的契约。
     """
-    sessions = async_sessionmaker(db.kw["bind"], autocommit=False, autoflush=False)
+    sessions = db
     # 登记时间用固定的：重录一遍，样例不变
     moments = iter(datetime(2026, 9, day, 2, 30, tzinfo=UTC) for day in (27, 28, 30))
     registry = SqlDatasetRegistry(lambda: sessions, clock=lambda: next(moments))

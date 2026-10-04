@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker
 from test_durable_delivery_db import db as db
 from test_durable_delivery_db import sql
 from test_knowledge_datasets import BUCKET, KEY, SHA256, VERSION, registration
@@ -18,8 +17,7 @@ BY = "service:info-backend"
 
 
 def registry(db) -> SqlDatasetRegistry:
-    # 生产的会话在提交后让对象过期；用和生产一样的配置来测
-    sessions = async_sessionmaker(db.kw["bind"], autocommit=False, autoflush=False)
+    sessions = db  # 夹具的会话就是生产的那一种
     return SqlDatasetRegistry(lambda: sessions)
 
 

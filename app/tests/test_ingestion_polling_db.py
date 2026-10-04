@@ -615,7 +615,8 @@ async def test_actual_worker_process_death_replays_persisted_poll(db, monkeypatc
     script = """
 import asyncio, sys, uuid
 sys.path.insert(0, 'tests')
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine
+from app.infrastructure.storage.postgres import make_session_factory
 from test_knowledge_delivery_db import authorized_settings
 from app.application.services import knowledge_ingestion_service as service
 from app.application.services import provider_delivery as provider
@@ -635,7 +636,7 @@ provider.create_provider = lambda settings: RAGFlowProvider(settings, client=Cli
 async def main():
     engine = create_async_engine(sys.argv[1],
         connect_args={'server_settings': {'search_path': sys.argv[2] + ',public'}})
-    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    sessions = make_session_factory(engine)
     runtime = DurableTasks(sessions, handlers=get_delivery_handlers())
     await runtime.consume(uuid.UUID(sys.argv[3]))
 asyncio.run(main())
