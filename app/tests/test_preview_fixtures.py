@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -314,7 +315,9 @@ async def test_the_registry_for_the_admin_pages(db, default_dataset, tmp_path): 
     管理端还没有预览（账本 H46），这些样例先用来核对管理端手写的契约。
     """
     sessions = async_sessionmaker(db.kw["bind"], autocommit=False, autoflush=False)
-    registry = SqlDatasetRegistry(lambda: sessions)
+    # 登记时间用固定的：重录一遍，样例不变
+    moments = iter(datetime(2026, 9, day, 2, 30, tzinfo=UTC) for day in (27, 28, 30))
+    registry = SqlDatasetRegistry(lambda: sessions, clock=lambda: next(moments))
     made_up = made_up_dataset(tmp_path / "moutai.sqlite")
     older = airport(
         data_version=AIRPORT_OLD_VERSION,
@@ -325,7 +328,7 @@ async def test_the_registry_for_the_admin_pages(db, default_dataset, tmp_path): 
             "sh600009-financials.sqlite"
         ),
     )
-    for reg in (older, airport(), moutai(made_up)):
+    for reg in (older, moutai(made_up), airport()):
         await registry.register(reg, registered_by="service:info-backend")
     state = SimpleNamespace(
         config=settings_of(default_dataset, tmp_path, registry=True)

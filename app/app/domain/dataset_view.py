@@ -46,6 +46,10 @@ NOTE_WORDS = {
 }
 
 
+# 不认识的说明照样列出来，只是没有专门的名字
+OTHER_NOTE = "其他说明"
+
+
 def matches(entry: dict[str, Any], query: str | None) -> bool:
     """按证券代码、数据集名或数据集标识找；不分大小写，包含就算。"""
     wanted = (query or "").strip().lower()
@@ -62,7 +66,7 @@ def note_label(key: str) -> str:
         return NOTE_WORDS[key]
     if key.startswith("restatement_explanation_"):
         return f"{key.rsplit('_', 1)[-1]} 年追溯调整的原因"
-    return key
+    return OTHER_NOTE
 
 
 def notes_of(metadata: dict[str, str]) -> tuple[list[dict[str, str]], list[dict]]:
@@ -105,11 +109,9 @@ def table_view(
 
 
 def metric_view(row: dict[str, Any]) -> dict[str, Any]:
-    tables = [
-        str(t)
-        for t in dict.fromkeys((row.get("base_table"), row.get("source_table")))
-        if t
-    ]
+    # 用到几张表的口径，来源写成「表+表」：拆开，一张表只列一次
+    named = f"{row.get('base_table') or ''}+{row.get('source_table') or ''}"
+    tables = list(dict.fromkeys(t.strip() for t in named.split("+") if t.strip()))
     queryable = row.get("queryable")
     return {
         "name": str(row.get("metric_name") or ""),

@@ -93,7 +93,7 @@ def test_notes_are_split_into_sources_and_limitations():
     assert [(n["key"], n["label"]) for n in limitations] == [
         ("interim_note", "中报与季报"),
         ("restatement_explanation_2021", "2021 年追溯调整的原因"),
-        ("something_new", "something_new"),  # 不认识的说明照样列出来，不丢
+        ("something_new", "其他说明"),  # 不认识的说明照样列出来，不丢
     ]
     assert note_label("license_note") == "使用范围"
 
@@ -126,6 +126,15 @@ def test_a_metric_from_an_older_dataset_has_no_made_up_fields():
     assert new["tables"] == ["income_statement"]
     assert new["expression"] == "(a - b) / a" and new["queryable"] is True
     assert metric_view({"metric_name": "m", "queryable": 0})["queryable"] is False
+    # 用到几张表的口径：拆开列，不重复
+    across = metric_view(
+        {
+            "metric_name": "ocf_to_netprofit",
+            "base_table": "cash_flow",
+            "source_table": "cash_flow+income_statement",
+        }
+    )
+    assert across["tables"] == ["cash_flow", "income_statement"]
 
 
 # ---------------- 页面背后的读法 ----------------
