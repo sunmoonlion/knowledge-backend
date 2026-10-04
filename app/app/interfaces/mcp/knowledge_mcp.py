@@ -14,11 +14,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 import time
-from collections import defaultdict, deque
+from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Header, Request, Response
@@ -27,21 +25,15 @@ from joserfc import jwt
 from joserfc.errors import JoseError
 from joserfc.jwk import ECKey
 
+from app.application.services.call_rate import RateLimiter
 from app.application.services.dataset_catalog import (
     DatasetCatalog,
     DatasetQueries,
     UnknownDataset,
 )
 from app.application.services.dataset_query import SqlRejected
-from app.infrastructure.datasets import SqliteDatasetQueries
-from app.infrastructure.external.dataset_store import (
-    DatasetUnavailable,
-    ObjectDatasetFiles,
-    ensure_dataset,
-)
-from app.infrastructure.repositories.dataset_registry import SqlDatasetRegistry
-from app.infrastructure.semantic import SemanticDataset
-from app.infrastructure.storage.postgres import get_postgres
+from app.bootstrap.datasets import build_datasets
+from app.infrastructure.external.dataset_store import DatasetUnavailable
 from core.config import Settings, get_settings
 
 log = logging.getLogger(__name__)
@@ -278,22 +270,6 @@ class TokenTable:
         )
 
 
-class RateLimiter:
-    def __init__(self, per_minute: int) -> None:
-        self.per_minute = per_minute
-        self.calls: dict[str, deque[float]] = defaultdict(deque)
-
-    def allow(self, key: str) -> bool:
-        now = time.monotonic()
-        q = self.calls[key]
-        while q and now - q[0] > 60:
-            q.popleft()
-        if len(q) >= self.per_minute:
-            return False
-        q.append(now)
-        return True
-
-
 class KnowledgeMcp:
     def __init__(
         self, settings: Settings, catalog: DatasetCatalog | None = None
@@ -308,51 +284,12 @@ class KnowledgeMcp:
         self.semantic = settings.knowledge_semantic_engine_enabled
         self.tools = tool_specs(semantic=self.semantic)
         self.anomalies: dict[str, int] = defaultdict(int)
-        self._dataset_lock = threading.Lock()
-        self._dataset_ready = False
-        self.dataset: DatasetQueries = self._open_dataset(
-            Path(settings.knowledge_dataset_path),
-            settings.knowledge_dataset_id,
-            ensure=self.ensure_dataset,
-        )
-        self.catalog = catalog or self._default_catalog()
-
-    def _open_dataset(
-        self, path: Path, dataset_id: str, *, ensure: Any = None
-    ) -> DatasetQueries:
-        if not self.semantic:
-            return SqliteDatasetQueries(path, dataset_id=dataset_id)
-        return SemanticDataset(
-            path,
-            dataset_id=dataset_id,
-            cache_dir=Path(self.settings.knowledge_semantic_cache_dir),
-            ensure=ensure,
-        )
-
-    def _default_catalog(self) -> DatasetCatalog:
-        enabled = self.settings.knowledge_dataset_registry_enabled
-        return DatasetCatalog(
-            default=self.dataset,
-            ensure_default=self.ensure_dataset,
-            default_title=self.settings.knowledge_dataset_id,
-            registry=(
-                SqlDatasetRegistry(lambda: get_postgres().session_factory)
-                if enabled
-                else None
-            ),
-            files=ObjectDatasetFiles(self.settings) if enabled else None,
-            open_dataset=self._open_dataset,
-        )
-
-    def ensure_dataset(self) -> None:
-        """第一次用到时才取数据集（可能要从对象存储下载），进程内只做一次。"""
-        if self._dataset_ready:
-            return
-        with self._dataset_lock:
-            if self._dataset_ready:
-                return
-            ensure_dataset(self.settings)
-            self._dataset_ready = True
+        # 默认数据集与目录在装配层建（app/bootstrap/datasets.py）：页面用的也是那一份
+        self.dataset: DatasetQueries | None = None
+        if catalog is None:
+            datasets = build_datasets(settings)
+            catalog, self.dataset = datasets.catalog, datasets.default
+        self.catalog = catalog
 
     # ---------------- JSON-RPC ----------------
     async def handle(

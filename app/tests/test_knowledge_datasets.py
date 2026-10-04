@@ -426,6 +426,15 @@ def test_storage_errors_do_not_leave_partial_files(default_dataset, tmp_path):
     assert list((tmp_path / "cache").glob("*")) == []
 
 
+def test_whether_a_file_was_fetched_is_seen_without_fetching(default_dataset, tmp_path):
+    seen: list[httpx.Request] = []
+    settings = settings_for(default_dataset, tmp_path)
+    files = ObjectDatasetFiles(settings, store(FIXTURE.read_bytes(), seen))
+    assert files.fetched(registered()) is False and seen == []
+    files.ensure(registered())
+    assert files.fetched(registered()) is True and len(seen) == 1
+
+
 # ---------------------------------------------------------------- MCP
 
 

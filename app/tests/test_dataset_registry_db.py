@@ -10,7 +10,7 @@ from test_durable_delivery_db import db as db
 from test_durable_delivery_db import sql
 from test_knowledge_datasets import BUCKET, KEY, SHA256, VERSION, registration
 
-from app.domain.datasets import ACTIVE, DatasetVersionConflict
+from app.domain.datasets import ACTIVE, SUPERSEDED, DatasetVersionConflict
 from app.infrastructure.repositories.dataset_registry import SqlDatasetRegistry
 
 NEWER = "sh600009-financials-ffffffffffffffff"
@@ -155,3 +155,29 @@ async def test_the_database_refuses_two_active_versions_and_bad_values(db):
         await sql(db, insert, v="v4", s="A" * 64, status="superseded")
     with pytest.raises(Exception, match="uq_knowledge_dataset_version"):
         await sql(db, insert, v=VERSION, s="a" * 64, status="superseded")
+
+
+async def test_the_history_keeps_every_version(db):
+    """管理端的登记表（`AT-KNOW-02`）：现行的与被取代的都在，被取代的有时间。"""
+    await registry(db).register(registration(), registered_by=BY)
+    await registry(db).register(newer(), registered_by=BY)
+    other = registration(
+        dataset_id="sh600519-financials",
+        data_version="sh600519-financials-0000000000000001",
+        security_code="600519",
+        title="贵州茅台 财务报表",
+        sha256="b" * 64,
+    )
+    await registry(db).register(other, registered_by=BY)
+
+    everything = await registry(db).versions()
+    assert [(d.dataset_id, d.data_version, d.status) for d in everything] == [
+        ("sh600009-financials", NEWER, ACTIVE),
+        ("sh600009-financials", VERSION, SUPERSEDED),
+        ("sh600519-financials", "sh600519-financials-0000000000000001", ACTIVE),
+    ]
+    one = await registry(db).versions("sh600009-financials")
+    assert [d.data_version for d in one] == [NEWER, VERSION]
+    old = one[1]
+    assert old.changed_at is not None and old.changed_at >= old.registered_at
+    assert await registry(db).versions("sh000001-financials") == []

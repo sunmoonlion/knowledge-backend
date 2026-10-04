@@ -164,6 +164,8 @@ class Settings(BaseSettings):
     # 知识 MCP（0006）：数据集与令牌表；第一期静态令牌（D10）
     knowledge_dataset_path: str = "datasets/lesson23_business_analysis.sqlite"
     knowledge_dataset_id: str = "lesson23-business-analysis"
+    # 默认数据集在数据目录页面上叫什么；不配就显示它的标识
+    knowledge_dataset_title: str | None = None
     # 本地没有文件时从对象存储取：s3://bucket/key，并按 sha256 钉版本（F-KNOW-07）
     knowledge_dataset_object: str | None = None
     knowledge_dataset_sha256: str | None = None
@@ -172,6 +174,8 @@ class Settings(BaseSettings):
     knowledge_mcp_jwt_public_key: str | None = None
     knowledge_mcp_jwt_issuer: str | None = None
     knowledge_mcp_rate_per_minute: int = 120
+    # 数据目录页面的接口：每个用户每分钟的调用数，与工具的限流分开计
+    knowledge_catalog_rate_per_minute: int = 120
     # 多数据集（0008-info 段三）：打开后，除默认数据集外还认登记表里的数据集。
     # 登记的数据集只从下面列出的桶里取（逗号分隔），按 sha256 钉版，取到缓存目录。
     knowledge_dataset_registry_enabled: bool = False

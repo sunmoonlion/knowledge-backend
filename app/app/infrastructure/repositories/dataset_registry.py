@@ -36,6 +36,7 @@ def _entity(row: KnowledgeDataset) -> RegisteredDataset:
         status=row.status,
         registered_by=row.registered_by,
         registered_at=row.registered_at,
+        changed_at=row.updated_at,
     )
 
 
@@ -117,6 +118,8 @@ class SqlDatasetRegistry:
                 )
                 session.add(row)
             await session.flush()
+            # 变动时间由数据库填：读回来，否则取它会在不该查库的地方查库
+            await session.refresh(row)
             entity = _entity(row)
             await session.commit()
             return entity
@@ -128,6 +131,16 @@ class SqlDatasetRegistry:
                 .where(KnowledgeDataset.status == ACTIVE)
                 .order_by(KnowledgeDataset.dataset_id)
             )
+            return [_entity(r) for r in rows.scalars()]
+
+    async def versions(self, dataset_id: str | None = None) -> list[RegisteredDataset]:
+        async with self._sessions()() as session:
+            query = select(KnowledgeDataset).order_by(
+                KnowledgeDataset.dataset_id, KnowledgeDataset.registered_at.desc()
+            )
+            if dataset_id is not None:
+                query = query.where(KnowledgeDataset.dataset_id == dataset_id)
+            rows = await session.execute(query)
             return [_entity(r) for r in rows.scalars()]
 
     async def get_active(self, dataset_id: str) -> RegisteredDataset | None:

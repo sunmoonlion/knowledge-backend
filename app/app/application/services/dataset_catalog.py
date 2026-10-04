@@ -111,6 +111,14 @@ class DatasetCatalog:
         return service
 
     async def describe(self) -> list[dict[str, object]]:
+        """工具 `list_datasets` 给模型看的那一份。"""
+        return [
+            {k: v for k, v in entry.items() if k != "updated_at"}
+            for entry in await self.listing()
+        ]
+
+    async def listing(self) -> list[dict[str, object]]:
+        """现有的数据集。页面与工具列的是这同一份（F-KNOW-11），页面多一个更新时间。"""
         await self._refresh()
         await asyncio.to_thread(self._ensure_default)
         info = await asyncio.to_thread(self._default.info)
@@ -123,8 +131,15 @@ class DatasetCatalog:
                 "start_date": info.start_date,
                 "end_date": info.end_date,
                 "default": True,
+                "updated_at": None,
             }
         ]
         for entry in sorted(self._known.values(), key=lambda r: r.dataset_id):
-            listed.append({**entry.summary(), "default": False})
+            listed.append(
+                {
+                    **entry.summary(),
+                    "default": False,
+                    "updated_at": entry.registered_at,
+                }
+            )
         return listed

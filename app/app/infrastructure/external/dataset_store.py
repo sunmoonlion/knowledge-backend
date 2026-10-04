@@ -149,6 +149,16 @@ class ObjectDatasetFiles:
         self._settings = settings
         self._transport = transport
 
+    def _path(self, dataset) -> Path:
+        return (
+            Path(self._settings.knowledge_dataset_cache_dir)
+            / f"{dataset.sha256}.sqlite"
+        )
+
+    def fetched(self, dataset) -> bool:
+        """文件在不在缓存里。文件名就是校验值，取回时核对过才会落到这个名字上。"""
+        return self._path(dataset).is_file()
+
     def ensure(self, dataset) -> Path:
         allowed = {
             b.strip()
@@ -157,10 +167,7 @@ class ObjectDatasetFiles:
         }
         if dataset.bucket not in allowed:
             raise DatasetUnavailable("dataset bucket is not allowed")
-        path = (
-            Path(self._settings.knowledge_dataset_cache_dir)
-            / f"{dataset.sha256}.sqlite"
-        )
+        path = self._path(dataset)
         if path.is_file():
             if _sha256(path) == dataset.sha256:
                 return path

@@ -104,6 +104,8 @@ class RegisteredDataset:
     status: str
     registered_by: str
     registered_at: datetime
+    # 这一行最后一次变动的时间：被取代的版本，就是它被取代的时间
+    changed_at: datetime | None = None
 
     def summary(self) -> dict[str, object]:
         return {
