@@ -43,7 +43,8 @@ SERVER_INFO = {"name": "sunmoon-knowledge", "version": "0.2.0"}
 _DATASET_ARG = {
     "type": "string",
     "description": (
-        "Dataset to use, as returned by list_datasets. Omit for the default dataset."
+        "Dataset to use, as returned by list_datasets. "
+        "Omit only when that list marks one as default."
     ),
 }
 ALL_TOOLS: dict[str, dict[str, Any]] = {

@@ -1,6 +1,9 @@
 """数据集目录（0008-info 段三）：默认数据集 + 登记表里的现行数据集。
 
 没有打开多数据集时，目录里只有默认数据集，行为与以前完全一样。
+
+默认数据集可以没有：它是开发和评测用的样例库，文件不进镜像；一个站点没装它，
+目录里就只有登记进来的数据集，不给标识的调用会被告知去看清单。装了但取不到，仍然是故障。
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ class DatasetCatalog:
         registry: DatasetRegistry | None = None,
         files: DatasetFiles | None = None,
         open_dataset: Callable[[Path, str], DatasetQueries] | None = None,
+        has_default: Callable[[], bool] | None = None,
         ttl_seconds: float = 30.0,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -60,6 +64,8 @@ class DatasetCatalog:
         self._registry = registry
         self._files = files
         self._open = open_dataset
+        # 这个站点装没装默认数据集；不给就当作装了（以前的行为）
+        self._has_default = has_default or (lambda: True)
         self._ttl = ttl_seconds
         self._now = monotonic
         self._known: dict[str, RegisteredDataset] = {}
@@ -92,6 +98,11 @@ class DatasetCatalog:
     async def resolve(self, dataset_id: str | None) -> DatasetQueries:
         """按标识取查询服务。不给标识就是默认数据集。"""
         if dataset_id is None or dataset_id == self.default_id:
+            if not self._has_default():
+                raise UnknownDataset(
+                    "there is no default dataset here; call list_datasets and pass "
+                    "one of the listed ids as `dataset`"
+                )
             await asyncio.to_thread(self._ensure_default)
             return self._default
         if not isinstance(dataset_id, str) or not dataset_id:
@@ -120,20 +131,22 @@ class DatasetCatalog:
     async def listing(self) -> list[dict[str, object]]:
         """现有的数据集。页面与工具列的是这同一份（F-KNOW-11），页面多一个更新时间。"""
         await self._refresh()
-        await asyncio.to_thread(self._ensure_default)
-        info = await asyncio.to_thread(self._default.info)
-        listed: list[dict[str, object]] = [
-            {
-                "dataset": self.default_id,
-                "title": self._default_title,
-                "security_code": None,
-                "data_version": info.data_version,
-                "start_date": info.start_date,
-                "end_date": info.end_date,
-                "default": True,
-                "updated_at": None,
-            }
-        ]
+        listed: list[dict[str, object]] = []
+        if self._has_default():
+            await asyncio.to_thread(self._ensure_default)
+            info = await asyncio.to_thread(self._default.info)
+            listed.append(
+                {
+                    "dataset": self.default_id,
+                    "title": self._default_title,
+                    "security_code": None,
+                    "data_version": info.data_version,
+                    "start_date": info.start_date,
+                    "end_date": info.end_date,
+                    "default": True,
+                    "updated_at": None,
+                }
+            )
         for entry in sorted(self._known.values(), key=lambda r: r.dataset_id):
             listed.append(
                 {

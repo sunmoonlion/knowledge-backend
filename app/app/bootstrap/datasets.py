@@ -97,6 +97,12 @@ def build_datasets(settings: Settings) -> Datasets:
         registry=build_dataset_registry() if enabled else None,
         files=build_dataset_files(settings) if enabled else None,
         open_dataset=open_dataset,
+        # 默认数据集是样例库，文件不进镜像：
+        # 本地没有、也没配对象存储里的那一份，就是这个站点没装它
+        has_default=lambda: (
+            Path(settings.knowledge_dataset_path).is_file()
+            or bool(settings.knowledge_dataset_object)
+        ),
     )
     return Datasets(settings=settings, default=default, catalog=catalog)
 

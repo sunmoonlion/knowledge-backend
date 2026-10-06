@@ -182,7 +182,9 @@ def settings_for(default_dataset: Path, tmp_path: Path, **changes) -> Settings:
     return Settings(**(base | changes))
 
 
-def catalog_for(settings: Settings, registry, files, clock=None) -> DatasetCatalog:
+def catalog_for(
+    settings: Settings, registry, files, clock=None, **more
+) -> DatasetCatalog:
     default = SqliteDatasetQueries(
         Path(settings.knowledge_dataset_path), dataset_id=settings.knowledge_dataset_id
     )
@@ -197,6 +199,7 @@ def catalog_for(settings: Settings, registry, files, clock=None) -> DatasetCatal
             path, dataset_id=dataset_id
         ),
         **extra,
+        **more,
     )
 
 
@@ -436,6 +439,85 @@ def test_whether_a_file_was_fetched_is_seen_without_fetching(default_dataset, tm
 
 
 # ---------------------------------------------------------------- MCP
+
+
+async def test_a_site_without_the_default_dataset_lists_only_what_is_registered(
+    default_dataset, tmp_path
+):
+    """新集群上的样子：样例库没装，登记进来的数据集照常能列、能查。"""
+    settings = settings_for(default_dataset, tmp_path)
+    touched = []
+    catalog = catalog_for(
+        settings,
+        MemoryRegistry(registered()),
+        LocalFiles(tmp_path),
+        has_default=lambda: False,
+    )
+    catalog._ensure_default = lambda: touched.append("default")
+    listed = await catalog.describe()
+    assert [(d["dataset"], d["default"]) for d in listed] == [
+        ("sh600009-financials", False)
+    ]
+    assert (await catalog.resolve("sh600009-financials")).dataset_id == (
+        "sh600009-financials"
+    )
+    for name in (None, "retail"):
+        with pytest.raises(UnknownDataset, match="no default dataset.*list_datasets"):
+            await catalog.resolve(name)
+    assert touched == []  # 没装就不去取
+
+
+async def test_a_site_with_neither_default_nor_registered_datasets_has_an_empty_list(
+    default_dataset, tmp_path
+):
+    settings = settings_for(default_dataset, tmp_path)
+    catalog = catalog_for(settings, None, None, has_default=lambda: False)
+    assert await catalog.describe() == []
+
+
+async def test_without_the_default_the_tools_say_where_to_look(
+    default_dataset, tmp_path
+):
+    settings = settings_for(default_dataset, tmp_path)
+    catalog = catalog_for(
+        settings,
+        MemoryRegistry(registered()),
+        LocalFiles(tmp_path),
+        has_default=lambda: False,
+    )
+    app = FastAPI()
+    register_exception_handlers(app)
+    app.include_router(build_router(settings, catalog), prefix="/api")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://kb"
+    ) as client:
+        error, data, _ = await call(client, "list_datasets")
+        assert not error
+        assert [d["dataset"] for d in data["datasets"]] == ["sh600009-financials"]
+        error, _, text = await call(client, "run_sql", {"sql": "SELECT 1"})
+        assert error and "list_datasets" in text and "unavailable" not in text
+        error, data, _ = await call(
+            client, "describe_schema", {"dataset": "sh600009-financials"}
+        )
+        assert not error and data["tables"]
+
+
+def test_the_default_is_installed_only_when_its_file_or_object_is_there(tmp_path):
+    from app.bootstrap.datasets import build_datasets
+
+    def site(**changes):
+        base = {
+            "_env_file": None,
+            "knowledge_dataset_path": str(tmp_path / "absent.sqlite"),
+            "knowledge_semantic_engine_enabled": False,
+        }
+        return build_datasets(Settings(**(base | changes))).catalog
+
+    assert site()._has_default() is False
+    assert site(knowledge_dataset_object="s3://b/k.sqlite")._has_default() is True
+    present = tmp_path / "here.sqlite"
+    present.write_bytes(b"x")
+    assert site(knowledge_dataset_path=str(present))._has_default() is True
 
 
 @pytest.fixture
