@@ -30,14 +30,13 @@ from test_knowledge_datasets import (
 from test_knowledge_datasets import default_dataset as default_dataset
 
 import app.interfaces.http.middleware.auth as auth_middleware
-from app.application.services.call_rate import RateLimiter
 from app.application.services.dataset_catalog import UnknownDataset
 from app.application.services.dataset_pages import DatasetPages
 from app.application.services.dataset_registry_view import DatasetRegistryView
 from app.domain.dataset_view import matches, metric_view, note_label, notes_of
 from app.domain.datasets import SUPERSEDED
+from app.interfaces.http.admin.catalog import get_dataset_pages
 from app.interfaces.http.admin.datasets import get_registry_view, registry_settings
-from app.interfaces.http.web.catalog import get_catalog_rate, get_dataset_pages
 from app.interfaces.mcp.knowledge_mcp import KnowledgeMcp
 from app.main import app
 
@@ -268,43 +267,51 @@ async def test_the_default_dataset_has_a_page_too(default_dataset, tmp_path):
         await pages.detail(DATASET)
 
 
-# ---------------- 网页端的接口 ----------------
-@pytest.fixture
-def web(default_dataset, tmp_path, monkeypatch: pytest.MonkeyPatch):
-    fake = FakeAuthService({"member": session("web", "profile:read")})
-    monkeypatch.setattr(auth_middleware, "web_auth_service", fake)
-    pages, _, _ = pages_for(default_dataset, tmp_path)
-    rate = RateLimiter(50)
-    app.dependency_overrides[get_dataset_pages] = lambda: pages
-    app.dependency_overrides[get_catalog_rate] = lambda: rate
-    try:
-        yield rate
-    finally:
-        app.dependency_overrides.pop(get_dataset_pages, None)
-        app.dependency_overrides.pop(get_catalog_rate, None)
-
-
-def browser(cookie: str | None = "sunmoonai_knowledge_web_sid") -> httpx.AsyncClient:
+# ---------------- 管理端的目录接口（账 56：数据目录只在管理端） ----------------
+def console(who: str | None = "owner") -> httpx.AsyncClient:
     http = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     )
-    if cookie:
-        http.cookies.set(cookie, "member")
+    if who:
+        http.cookies.set("sunmoonai_knowledge_admin_sid", who)
     return http
 
 
-LIST = "/api/web/v1/catalog/datasets"
+def admins() -> FakeAuthService:
+    return FakeAuthService(
+        {
+            "owner": session("admin", "knowledge:admin"),
+            "visitor": session("admin", "profile:read"),
+        }
+    )
 
 
-async def test_the_catalog_needs_a_signed_in_user(web):
-    """`AT-KNOW-06`。"""
-    async with browser(cookie=None) as http:
+@pytest.fixture
+def catalog(default_dataset, tmp_path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(auth_middleware, "admin_auth_service", admins())
+    pages, _, _ = pages_for(default_dataset, tmp_path)
+    app.dependency_overrides[get_dataset_pages] = lambda: pages
+    try:
+        yield pages
+    finally:
+        app.dependency_overrides.pop(get_dataset_pages, None)
+
+
+LIST = "/api/admin/v1/knowledge/catalog/datasets"
+
+
+async def test_only_the_knowledge_admin_sees_the_catalog(catalog):
+    """没登录的 401；登录了但不是 knowledge 管理员的 403。"""
+    async with console(None) as http:
         assert (await http.get(LIST)).status_code == 401
         assert (await http.get(f"{LIST}/{DATASET}")).status_code == 401
+    async with console("visitor") as http:
+        assert (await http.get(LIST)).status_code == 403
+        assert (await http.get(f"{LIST}/{DATASET}")).status_code == 403
 
 
-async def test_the_list_and_the_search(web):
-    async with browser() as http:
+async def test_the_list_and_the_search(catalog):
+    async with console() as http:
         everything = await http.get(LIST)
         found = await http.get(LIST, params={"q": "600009"})
         missing = await http.get(LIST, params={"q": "600519"})
@@ -330,8 +337,8 @@ async def test_the_list_and_the_search(web):
         assert "sha256" not in answer.text
 
 
-async def test_one_dataset_over_http(web):
-    async with browser() as http:
+async def test_one_dataset_over_http(catalog):
+    async with console() as http:
         got = await http.get(f"{LIST}/{DATASET}")
         unknown = await http.get(f"{LIST}/sh600519-financials")
     assert got.status_code == 200
@@ -355,11 +362,10 @@ async def test_one_dataset_over_http(web):
     assert unknown.status_code == 404
 
 
-async def test_the_pages_have_their_own_rate_limit(web):
-    web.per_minute = 2
-    async with browser() as http:
-        codes = [(await http.get(LIST)).status_code for _ in range(3)]
-    assert codes == [200, 200, 429]
+async def test_the_catalog_is_not_on_the_web_side():
+    """账 56：用户侧没有数据目录。"""
+    paths = {route.path for route in app.routes}
+    assert not [p for p in paths if p.startswith("/api/web/v1/catalog")]
 
 
 async def test_a_broken_registry_tells_the_page_nothing_internal(
@@ -369,18 +375,15 @@ async def test_a_broken_registry_tells_the_page_nothing_internal(
         async def active(self):
             raise RuntimeError("connection to 10.0.0.5:5432 refused, password=hunter2")
 
-    fake = FakeAuthService({"member": session("web", "profile:read")})
-    monkeypatch.setattr(auth_middleware, "web_auth_service", fake)
+    monkeypatch.setattr(auth_middleware, "admin_auth_service", admins())
     pages, _, _ = pages_for(default_dataset, tmp_path, Broken())
     app.dependency_overrides[get_dataset_pages] = lambda: pages
-    app.dependency_overrides[get_catalog_rate] = lambda: RateLimiter(50)
     try:
-        async with browser() as http:
+        async with console() as http:
             listing = await http.get(LIST)
             detail = await http.get(f"{LIST}/{DATASET}")
     finally:
         app.dependency_overrides.pop(get_dataset_pages, None)
-        app.dependency_overrides.pop(get_catalog_rate, None)
     assert (listing.status_code, detail.status_code) == (503, 503)
     assert "hunter2" not in listing.text + detail.text
     assert "10.0.0.5" not in listing.text + detail.text
@@ -440,15 +443,6 @@ def admin(default_dataset, tmp_path, monkeypatch: pytest.MonkeyPatch):
         app.dependency_overrides.pop(get_registry_view, None)
 
 
-def console(who: str | None = "owner") -> httpx.AsyncClient:
-    http = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-    )
-    if who:
-        http.cookies.set("sunmoonai_knowledge_admin_sid", who)
-    return http
-
-
 REGISTRY = "/api/admin/v1/knowledge/datasets"
 
 
@@ -459,8 +453,11 @@ async def test_only_the_knowledge_admin_sees_the_registry(admin):
     async with console("visitor") as http:
         assert (await http.get(REGISTRY)).status_code == 403
         assert (await http.get(f"{REGISTRY}/{DATASET}/versions")).status_code == 403
-    async with browser() as http:
+    # 拿网页端的登录来：管理接口不认
+    async with console(None) as http:
+        http.cookies.set("sunmoonai_knowledge_web_sid", "owner")
         assert (await http.get(REGISTRY)).status_code == 401
+        assert (await http.get(LIST)).status_code == 401
 
 
 async def test_the_registry_shows_the_current_version(admin):

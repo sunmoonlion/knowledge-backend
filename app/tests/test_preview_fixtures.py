@@ -1,16 +1,16 @@
-"""给网页端的预览造样例（knowledge-web-frontend `preview/fixtures/`）。
+"""给管理端造样例（knowledge-admin-frontend `preview/fixtures/`）。
 
+账 56 起数据目录只在管理端，用户侧没有页面，所以样例都是管理接口的返回。
 数据目录的返回由真的目录、真的查询、真的接口造出来：上海机场那一个是 info 实采建出来的
 数据集文件（`fixtures/sh600009-financials-v2.dataset.bin`）；贵州茅台那一个是这里现编的，
 它自己的说明里写明了是样例。目录页只有结构，所以样例里没有任何数值。
-平时它就是一个测试。要把样例写进网页端的仓库：
+平时它就是一个测试。要把样例写进管理端的仓库：
 
-    PREVIEW_FIXTURES_OUT=<网页端>/app/preview/fixtures \\
+    PREVIEW_ADMIN_FIXTURES_OUT=<管理端>/app/preview/fixtures \\
         uv run pytest tests/test_preview_fixtures.py
 
-管理端的登记表要真数据库（`DELIVERY_TEST_DATABASE_URL`），没有就跳过那一个：
-
-    PREVIEW_ADMIN_FIXTURES_OUT=<管理端>/app/preview/fixtures
+登记表那一份要真数据库（`DELIVERY_TEST_DATABASE_URL`），没有就跳过那一个。
+情景：`catalog`、`catalog-default-only` 是目录；`full`、`off` 是登记表。
 """
 
 from __future__ import annotations
@@ -32,19 +32,15 @@ from test_durable_delivery_db import db as db  # noqa: F401
 from test_knowledge_datasets import BUCKET, MemoryRegistry, registered, registration
 from test_knowledge_datasets import default_dataset as default_dataset  # noqa: F401
 
-from app.application.services.call_rate import RateLimiter
 from app.application.services.dataset_catalog import DatasetCatalog
 from app.application.services.dataset_pages import DatasetPages
 from app.application.services.dataset_registry_view import DatasetRegistryView
 from app.infrastructure.datasets import SqliteDatasetQueries
 from app.infrastructure.external.dataset_store import ObjectDatasetFiles
 from app.infrastructure.repositories.dataset_registry import SqlDatasetRegistry
+from app.interfaces.http.admin import catalog as catalog_routes
 from app.interfaces.http.admin import datasets as admin_routes
-from app.interfaces.http.middleware.auth import (
-    get_web_current_user,
-    require_knowledge_admin,
-)
-from app.interfaces.http.web import catalog as web_routes
+from app.interfaces.http.middleware.auth import require_knowledge_admin
 from core.config import Settings
 
 HERE = Path(__file__).parent
@@ -150,12 +146,11 @@ def settings_of(default_dataset: Path, tmp_path: Path, *, registry: bool) -> Set
 
 def served(pages: DatasetPages) -> httpx.AsyncClient:
     app = FastAPI()
-    app.include_router(web_routes.router, prefix="/api")
-    app.dependency_overrides[get_web_current_user] = lambda: (
-        session("web", "profile:read").principal
+    app.include_router(catalog_routes.router, prefix="/api")
+    app.dependency_overrides[require_knowledge_admin] = lambda: (
+        session("admin", "knowledge:admin").principal
     )
-    app.dependency_overrides[web_routes.get_dataset_pages] = lambda: pages
-    app.dependency_overrides[web_routes.get_catalog_rate] = lambda: RateLimiter(1000)
+    app.dependency_overrides[catalog_routes.get_dataset_pages] = lambda: pages
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://knowledge"
     )
@@ -184,7 +179,7 @@ def already_fetched(config: Settings, file: Path) -> None:
     (cache / f"{sha(file)}.sqlite").write_bytes(file.read_bytes())
 
 
-LIST = "/api/web/v1/catalog/datasets"
+LIST = "/api/admin/v1/knowledge/catalog/datasets"
 
 
 async def build_full(rec: Recorder, http: httpx.AsyncClient) -> None:
@@ -195,30 +190,27 @@ async def build_full(rec: Recorder, http: httpx.AsyncClient) -> None:
     for dataset in ("retail", AIRPORT, MOUTAI):
         await rec.get(http, f"{LIST}/{dataset}")
     await rec.get(http, f"{LIST}/sh000001-financials", expect=404)
-    rec.page("数据目录", "/zh-CN/catalog")
-    rec.page(
-        "数据目录：从 investment 来的", "/zh-CN/catalog?from=investment&ref=task-1"
-    )
-    rec.page("搜到一家", "/zh-CN/catalog?q=600009")
-    rec.page("没有这家公司的数据", "/zh-CN/catalog?q=000001")
-    rec.page("一个数据集：上海机场（实采的结构）", f"/zh-CN/catalog/{AIRPORT}")
-    rec.page("一个数据集：现编的样例", f"/zh-CN/catalog/{MOUTAI}")
-    rec.page("默认数据集", "/zh-CN/catalog/retail")
-    rec.page("没有这个数据集", "/zh-CN/catalog/sh000001-financials")
+    rec.page("数据目录", "/zh-CN/knowledge/catalog")
+    rec.page("搜到一家", "/zh-CN/knowledge/catalog?q=600009")
+    rec.page("没有这家公司的数据", "/zh-CN/knowledge/catalog?q=000001")
+    rec.page("一个数据集：上海机场（实采的）", f"/zh-CN/knowledge/catalog/{AIRPORT}")
+    rec.page("一个数据集：现编的样例", f"/zh-CN/knowledge/catalog/{MOUTAI}")
+    rec.page("默认数据集", "/zh-CN/knowledge/catalog/retail")
+    rec.page("没有这个数据集", "/zh-CN/knowledge/catalog/sh000001-financials")
 
 
 async def build_default_only(rec: Recorder, http: httpx.AsyncClient) -> None:
     await rec.get(http, LIST)
     await rec.get(http, LIST, q="600009")
     await rec.get(http, f"{LIST}/retail")
-    rec.page("数据目录（只有默认数据集）", "/zh-CN/catalog")
-    rec.page("搜一家公司：没有", "/zh-CN/catalog?q=600009")
-    rec.page("默认数据集", "/zh-CN/catalog/retail")
+    rec.page("数据目录（只有默认数据集）", "/zh-CN/knowledge/catalog")
+    rec.page("搜一家公司：没有", "/zh-CN/knowledge/catalog?q=600009")
+    rec.page("默认数据集", "/zh-CN/knowledge/catalog/retail")
 
 
 def where_to(tmp_path: Path) -> Path:
-    wanted = os.environ.get("PREVIEW_FIXTURES_OUT")
-    return Path(wanted) if wanted else tmp_path / "web"
+    wanted = os.environ.get("PREVIEW_ADMIN_FIXTURES_OUT")
+    return Path(wanted) if wanted else tmp_path / "admin"
 
 
 def written(directory: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -249,8 +241,8 @@ async def test_a_catalog_with_datasets(default_dataset, tmp_path):  # noqa: F811
         {AIRPORT: AIRPORT_FILE, MOUTAI: made_up},
     )
     rec = Recorder(
-        "default",
-        title="有几个数据集",
+        "catalog",
+        title="管理端：数据目录，有几个数据集",
         description=(
             "默认数据集之外登记了两家公司。上海机场的表、列、口径、说明是 info 实采"
             "建出来的那一份；贵州茅台那一个是为预览现编的，它的说明里写着。"
@@ -277,7 +269,7 @@ async def test_a_catalog_with_datasets(default_dataset, tmp_path):  # noqa: F811
     assert SAMPLE_NOTE in [n["text"] for n in sample["limitations"]]
     assert bodies[f"{LIST}/retail?"]["default"] is True
     assert [r["status"] for r in manifest["responses"]].count(404) == 1
-    assert len(manifest["pages"]) == 8
+    assert len(manifest["pages"]) == 7
 
     everything = "".join(
         (directory / r["file"]).read_text() for r in manifest["responses"]
@@ -291,8 +283,8 @@ async def test_a_catalog_with_datasets(default_dataset, tmp_path):  # noqa: F811
 async def test_a_catalog_with_only_the_default_dataset(default_dataset, tmp_path):  # noqa: F811
     config = settings_of(default_dataset, tmp_path, registry=False)
     rec = Recorder(
-        "default-only",
-        title="只有默认数据集",
+        "catalog-default-only",
+        title="管理端：数据目录，只有默认数据集",
         description="多数据集没有打开，或者一家公司都还没有登记进来。",
     )
     async with served(pages_of(config, [], {})) as http:
@@ -311,7 +303,7 @@ async def test_a_catalog_with_only_the_default_dataset(default_dataset, tmp_path
 async def test_the_registry_for_the_admin_pages(db, default_dataset, tmp_path):  # noqa: F811
     """管理端的登记表：上海机场登记过两个版本，贵州茅台一个。
 
-    管理端还没有预览（账本 H46），这些样例先用来核对管理端手写的契约。
+    管理端没有预览服务（账本 H46），这些样例用来核对管理端手写的契约、跑组件测试。
     """
     sessions = db
     # 登记时间用固定的：重录一遍，样例不变
@@ -343,8 +335,7 @@ async def test_the_registry_for_the_admin_pages(db, default_dataset, tmp_path): 
     app.dependency_overrides[admin_routes.get_registry_view] = lambda: (
         DatasetRegistryView(registry, ObjectDatasetFiles(state.config))
     )
-    wanted = os.environ.get("PREVIEW_ADMIN_FIXTURES_OUT")
-    out = Path(wanted) if wanted else tmp_path / "admin"
+    out = where_to(tmp_path)
     url = "/api/admin/v1/knowledge/datasets"
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://knowledge"
